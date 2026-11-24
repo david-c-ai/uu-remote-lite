@@ -1,0 +1,210 @@
+name: Build Multi-Platform Packages (macOS / Windows / Android)
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ============================================================================
+  # 1. macOS (.dmg + uu-server-lite-macos)
+  # ============================================================================
+  build-macos:
+    name: Package macOS (.dmg)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build native libuucore.dylib & run E2E benchmark tests
+        run: make test
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Scaffold & build Flutter macOS App
+        working-directory: client_flutter
+        run: |
+          cp -R lib /tmp/uu_lib_backup
+          cp pubspec.yaml /tmp/uu_pubspec_backup.yaml
+          flutter create . --project-name uu_remote_lite --platforms=macos
+          rm -rf lib && mv /tmp/uu_lib_backup lib
+          mv /tmp/uu_pubspec_backup.yaml pubspec.yaml
+
+          # Disable macOS App Sandbox so UDP Hole-Punching, ScreenCaptureKit & CGEvent work on real Macs
+          cat > macos/Runner/Release.entitlements << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.app-sandbox</key>
+            <false/>
+            <key>com.apple.security.network.client</key>
+            <true/>
+            <key>com.apple.security.network.server</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+          cp macos/Runner/Release.entitlements macos/Runner/DebugProfile.entitlements
+
+          flutter pub get
+          flutter build macos --release
+
+      - name: Bundle libuucore.dylib & package DMG
+        run: |
+          APP_PATH="client_flutter/build/macos/Build/Products/Release/uu_remote_lite.app"
+          mkdir -p "$APP_PATH/Contents/Frameworks"
+          cp build/libuucore.dylib "$APP_PATH/Contents/Frameworks/libuucore.dylib"
+          codesign --force --deep -s - "$APP_PATH"
+
+          mkdir -p dist-macos
+          cp -R "$APP_PATH" dist-macos/UURemoteLite.app
+          cp build/uu-server-lite dist-macos/uu-server-lite-macos
+          hdiutil create -volname "UURemoteLite" -srcfolder dist-macos -ov -format UDZO UURemoteLite-macOS.dmg
+
+      - name: Upload macOS DMG Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UURemoteLite-macOS
+          path: |
+            UURemoteLite-macOS.dmg
+            build/uu-server-lite
+
+  # ============================================================================
+  # 2. Windows x64 (.zip portable with .exe + uucore.dll + uu-server-lite.exe)
+  # ============================================================================
+  build-windows:
+    name: Package Windows x64 (.zip)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build native uucore.dll & uu-server-lite.exe (MSVC C++20)
+        run: |
+          cmake -B build-win -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-win --config Release
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Scaffold & build Flutter Windows App
+        shell: bash
+        working-directory: client_flutter
+        run: |
+          cp -R lib ../uu_lib_backup
+          cp pubspec.yaml ../uu_pubspec_backup.yaml
+          flutter create . --project-name uu_remote_lite --platforms=windows
+          rm -rf lib && mv ../uu_lib_backup lib
+          mv ../uu_pubspec_backup.yaml pubspec.yaml
+          flutter pub get
+          flutter build windows --release
+
+      - name: Bundle uucore.dll & uu-server-lite.exe into portable ZIP
+        shell: pwsh
+        run: |
+          $relDir = "client_flutter/build/windows/x64/runner/Release"
+          Copy-Item "build-win/Release/uucore.dll" "$relDir/uucore.dll" -Force
+          Copy-Item "build-win/Release/uu-server-lite.exe" "$relDir/uu-server-lite.exe" -Force
+          Compress-Archive -Path "$relDir/*" -DestinationPath "UURemoteLite-Windows-x64.zip" -Force
+
+      - name: Upload Windows Portable ZIP Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UURemoteLite-Windows-x64
+          path: UURemoteLite-Windows-x64.zip
+
+  # ============================================================================
+  # 3. Android (.apk with NDK C++20 libuucore.so for arm64-v8a & x86_64)
+  # ============================================================================
+  build-android:
+    name: Package Android (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build Android NDK libuucore.so (arm64-v8a & x86_64)
+        run: |
+          NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | sort -V | tail -n 1)
+          echo "Using Android NDK: $NDK_PATH"
+          for ABI in arm64-v8a x86_64; do
+            cmake -G "Unix Makefiles" -B build-android-$ABI \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI=$ABI \
+              -DANDROID_PLATFORM=android-26 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DUU_BUILD_TOOLS=OFF
+            cmake --build build-android-$ABI --config Release -j4
+          done
+
+      - name: Scaffold & build Flutter Android APK
+        working-directory: client_flutter
+        run: |
+          cp -R lib /tmp/uu_lib_backup
+          cp pubspec.yaml /tmp/uu_pubspec_backup.yaml
+          flutter create . --project-name uu_remote_lite --platforms=android
+          rm -rf lib && mv /tmp/uu_lib_backup lib
+          mv /tmp/uu_pubspec_backup.yaml pubspec.yaml
+
+          # Ensure INTERNET permission is present in Release AndroidManifest.xml for UDP sockets!
+          if ! grep -q "android.permission.INTERNET" android/app/src/main/AndroidManifest.xml; then
+            sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>/' android/app/src/main/AndroidManifest.xml
+          fi
+
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p android/app/src/main/jniLibs/x86_64
+          cp ../build-android-arm64-v8a/libuucore.so android/app/src/main/jniLibs/arm64-v8a/
+          cp ../build-android-x86_64/libuucore.so android/app/src/main/jniLibs/x86_64/
+
+          flutter pub get
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk ../UURemoteLite-Android.apk
+
+      - name: Upload Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UURemoteLite-Android
+          path: UURemoteLite-Android.apk
+
+  # ============================================================================
+  # 4. Auto-Publish GitHub Release on Tag Push (e.g. git tag v1.0.0 && git push --tags)
+  # ============================================================================
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-macos, build-windows, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/UURemoteLite-macOS.dmg
+            release-assets/UURemoteLite-Windows-x64.zip
+            release-assets/UURemoteLite-Android.apk

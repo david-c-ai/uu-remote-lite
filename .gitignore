@@ -1,0 +1,28 @@
+# Native C++ builds
+build/
+build-*/
+cmake-build*/
+*.o
+*.dylib
+*.dll
+*.so
+*.exe
+
+# Flutter / Dart build artifacts
+client_flutter/.dart_tool/
+client_flutter/.flutter-plugins
+client_flutter/.flutter-plugins-dependencies
+client_flutter/.packages
+client_flutter/build/
+client_flutter/pubspec.lock
+client_flutter/macos/
+client_flutter/windows/
+client_flutter/android/
+client_flutter/ios/
+client_flutter/linux/
+client_flutter/web/
+
+# macOS / Editor files
+.DS_Store
+.idea/
+.vscode/
