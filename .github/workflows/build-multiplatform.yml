@@ -15,7 +15,7 @@ jobs:
   # ============================================================================
   build-macos:
     name: Package macOS (.dmg)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -59,7 +59,8 @@ jobs:
 
       - name: Bundle libuucore.dylib & package DMG
         run: |
-          APP_PATH="client_flutter/build/macos/Build/Products/Release/uu_remote_lite.app"
+          APP_PATH=$(ls -d client_flutter/build/macos/Build/Products/Release/*.app | head -n 1)
+          echo "Packaging macOS app bundle: $APP_PATH"
           mkdir -p "$APP_PATH/Contents/Frameworks"
           cp build/libuucore.dylib "$APP_PATH/Contents/Frameworks/libuucore.dylib"
           codesign --force --deep -s - "$APP_PATH"
@@ -90,7 +91,7 @@ jobs:
       - name: Build native uucore.dll & uu-server-lite.exe (MSVC C++20)
         run: |
           cmake -B build-win -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-win --config Release
+          cmake --build build-win --config Release --target uucore uu-server-lite
 
       - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
@@ -113,8 +114,10 @@ jobs:
         shell: pwsh
         run: |
           $relDir = "client_flutter/build/windows/x64/runner/Release"
-          Copy-Item "build-win/Release/uucore.dll" "$relDir/uucore.dll" -Force
-          Copy-Item "build-win/Release/uu-server-lite.exe" "$relDir/uu-server-lite.exe" -Force
+          $dllPath = (Get-ChildItem -Path "build-win" -Filter "uucore.dll" -Recurse | Select-Object -First 1).FullName
+          $srvPath = (Get-ChildItem -Path "build-win" -Filter "uu-server-lite.exe" -Recurse | Select-Object -First 1).FullName
+          Copy-Item $dllPath "$relDir/uucore.dll" -Force
+          Copy-Item $srvPath "$relDir/uu-server-lite.exe" -Force
           Compress-Archive -Path "$relDir/*" -DestinationPath "UURemoteLite-Windows-x64.zip" -Force
 
       - name: Upload Windows Portable ZIP Artifact

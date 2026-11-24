@@ -3,9 +3,13 @@
 #include <stdint.h>
 
 #if defined(_WIN32)
-#define UUCORE_API __declspec(dllexport)
+  #if defined(uucore_EXPORTS)
+    #define UUCORE_API __declspec(dllexport)
+  #else
+    #define UUCORE_API __declspec(dllimport)
+  #endif
 #else
-#define UUCORE_API __attribute__((visibility("default")))
+  #define UUCORE_API __attribute__((visibility("default")))
 #endif
 
 #ifdef __cplusplus
