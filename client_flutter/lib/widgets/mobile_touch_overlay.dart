@@ -8,6 +8,7 @@ class MobileTouchOverlay extends StatefulWidget {
     required this.mode,
     required this.onRelativeTrackpadDelta,
     required this.onTrackpadClick,
+    required this.onTrackpadScroll,
     required this.onDirectTouchTapNorm,
     required this.onShortcutKey,
     required this.onGamepadUpdate,
@@ -16,6 +17,7 @@ class MobileTouchOverlay extends StatefulWidget {
   final MobileInputMode mode;
   final void Function(double dxNorm, double dyNorm) onRelativeTrackpadDelta;
   final void Function(int buttonMask) onTrackpadClick;
+  final void Function(int wheelDelta) onTrackpadScroll;
   final void Function(int xNorm, int yNorm) onDirectTouchTapNorm;
   final void Function(int keycode, int modifiers) onShortcutKey;
   final void Function(int buttons, int lx, int ly, int rx, int ry) onGamepadUpdate;
@@ -27,6 +29,7 @@ class MobileTouchOverlay extends StatefulWidget {
 class _MobileTouchOverlayState extends State<MobileTouchOverlay> {
   int _buttonsMask = 0;
   Offset _leftStick = Offset.zero;
+  bool _dockCollapsed = false;
 
   void _toggleButton(int bit, bool pressed) {
     setState(() {
@@ -50,53 +53,56 @@ class _MobileTouchOverlayState extends State<MobileTouchOverlay> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Gesture layer: Velocity-accelerated relative trackpad OR Direct touch
-        LayoutBuilder(
-          builder: (context, constraints) {
-            return GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onPanUpdate: (details) {
-                if (widget.mode == MobileInputMode.trackpadRelative) {
+        // Trackpad gesture layer (only captures pan in trackpad mode; directTouchZoom lets InteractiveViewer zoom!)
+        if (widget.mode == MobileInputMode.trackpadRelative)
+          LayoutBuilder(
+            builder: (context, constraints) {
+              return GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onPanUpdate: (details) {
                   final speed = details.delta.distance;
-                  // Pointer acceleration curve: fine pixel control when slow, rapid sweep when fast
-                  final gain = (1.0 + math.min(2.4, speed * 0.08)) / constraints.maxWidth;
+                  final refDim = math.max(320.0, math.min(constraints.maxWidth, constraints.maxHeight));
+                  final gain = (0.95 + math.min(2.2, speed * 0.08)) / refDim;
                   widget.onRelativeTrackpadDelta(
                     details.delta.dx * gain,
                     details.delta.dy * gain,
                   );
-                }
-              },
-              onTap: () {
-                if (widget.mode == MobileInputMode.trackpadRelative) {
-                  widget.onTrackpadClick(0x01); // Single-finger tap = Left Click
-                }
-              },
-              onDoubleTap: () {
-                if (widget.mode == MobileInputMode.trackpadRelative) {
-                  widget.onTrackpadClick(0x02); // Double tap / Context = Right Click
-                }
-              },
-              onTapDown: (details) {
-                if (widget.mode == MobileInputMode.directTouch) {
+                },
+                onTap: () => widget.onTrackpadClick(0x01),
+                onDoubleTap: () {
+                  widget.onTrackpadClick(0x01);
+                  Future.delayed(const Duration(milliseconds: 60), () {
+                    widget.onTrackpadClick(0x01);
+                  });
+                },
+                onLongPress: () => widget.onTrackpadClick(0x02),
+              );
+            },
+          )
+        else if (widget.mode == MobileInputMode.directTouchZoom)
+          LayoutBuilder(
+            builder: (context, constraints) {
+              return GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTapUp: (details) {
                   final xn = ((details.localPosition.dx / constraints.maxWidth).clamp(0.0, 1.0) * 65535).round();
                   final yn = ((details.localPosition.dy / constraints.maxHeight).clamp(0.0, 1.0) * 65535).round();
                   widget.onDirectTouchTapNorm(xn, yn);
-                }
-              },
-            );
-          },
-        ),
+                },
+              );
+            },
+          ),
 
-        // Virtual Gamepad Overlay (UU Remote Gaming Mode)
+        // Virtual Gamepad Overlay
         if (widget.mode == MobileInputMode.virtualGamepad) ...[
           Positioned(
-            left: 28,
-            bottom: 68,
+            left: 24,
+            bottom: 64,
             child: GestureDetector(
               onPanUpdate: (d) {
                 final clamped = Offset(
-                  (_leftStick.dx + d.delta.dx / 55.0).clamp(-1.0, 1.0),
-                  (_leftStick.dy + d.delta.dy / 55.0).clamp(-1.0, 1.0),
+                  (_leftStick.dx + d.delta.dx / 52.0).clamp(-1.0, 1.0),
+                  (_leftStick.dy + d.delta.dy / 52.0).clamp(-1.0, 1.0),
                 );
                 setState(() => _leftStick = clamped);
                 widget.onGamepadUpdate(
@@ -112,8 +118,8 @@ class _MobileTouchOverlayState extends State<MobileTouchOverlay> {
                 widget.onGamepadUpdate(_buttonsMask, 0, 0, 0, 0);
               },
               child: Container(
-                width: 116,
-                height: 116,
+                width: 112,
+                height: 112,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: Colors.white.withValues(alpha: 0.10),
@@ -121,63 +127,112 @@ class _MobileTouchOverlayState extends State<MobileTouchOverlay> {
                 ),
                 alignment: Alignment(_leftStick.dx, _leftStick.dy),
                 child: Container(
-                  width: 44,
-                  height: 44,
+                  width: 42,
+                  height: 42,
                   decoration: const BoxDecoration(
                     shape: BoxShape.circle,
-                    color: Colors.tealAccent,
+                    color: Color(0xFF38EF7D),
                   ),
                 ),
               ),
             ),
           ),
           Positioned(
-            right: 28,
-            bottom: 72,
-            child: Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                _padBtn('A', 0x01),
-                _padBtn('B', 0x02),
-                _padBtn('X', 0x04),
-                _padBtn('Y', 0x08),
-              ],
+            right: 24,
+            bottom: 68,
+            child: SizedBox(
+              width: 116,
+              child: Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  _padBtn('A', 0x01),
+                  _padBtn('B', 0x02),
+                  _padBtn('X', 0x04),
+                  _padBtn('Y', 0x08),
+                ],
+              ),
             ),
           ),
         ],
 
-        // Bottom Floating Shortcut Key Bar (Essential for iOS/Android Desktop Control)
+        // Collapsible Bottom Floating Quick-Action Dock
         Positioned(
-          left: 16,
-          right: 16,
-          bottom: 12,
-          child: Center(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.78),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _keyChip('Esc', 53, 0),
-                    _keyChip('Tab', 48, 0),
-                    _keyChip('Win/Cmd', 55, 0x08),
-                    _keyChip('Copy', 8, 0x08),
-                    _keyChip('Paste', 9, 0x08),
-                    _keyChip('Ctrl+Alt+Del', 117, 0x06),
-                  ],
-                ),
-              ),
+          left: 12,
+          right: 12,
+          bottom: 10,
+          child: SafeArea(
+            top: false,
+            child: Center(
+              child: _dockCollapsed
+                  ? ActionChip(
+                      backgroundColor: const Color(0xCC131924),
+                      avatar: const Icon(Icons.keyboard_arrow_up_rounded, size: 16),
+                      label: const Text('展开快捷栏', style: TextStyle(fontSize: 11)),
+                      onPressed: () => setState(() => _dockCollapsed = false),
+                    )
+                  : SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xDD111722),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.white12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _actionBtn('左键', Icons.ads_click_rounded, () => widget.onTrackpadClick(0x01)),
+                            _actionBtn('右键', Icons.touch_app_outlined, () => widget.onTrackpadClick(0x02)),
+                            _actionBtn('上滚', Icons.keyboard_arrow_up_rounded, () => widget.onTrackpadScroll(120)),
+                            _actionBtn('下滚', Icons.keyboard_arrow_down_rounded, () => widget.onTrackpadScroll(-120)),
+                            _divider(),
+                            _keyChip('Esc', 53, 0),
+                            _keyChip('Tab', 48, 0),
+                            _keyChip('Win/Cmd', 55, 0x08),
+                            _keyChip('复制', 8, 0x08),
+                            _keyChip('粘贴', 9, 0x08),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                              icon: const Icon(Icons.expand_more_rounded, size: 18, color: Colors.white54),
+                              onPressed: () => setState(() => _dockCollapsed = true),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
             ),
           ),
         ),
       ],
+    );
+  }
+
+  Widget _divider() => Container(
+        width: 1,
+        height: 18,
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        color: Colors.white12,
+      );
+
+  Widget _actionBtn(String label, IconData icon, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: const Color(0xFF4FFFB0)),
+            const SizedBox(width: 3),
+            Text(label, style: const TextStyle(color: Colors.white, fontSize: 11)),
+          ],
+        ),
+      ),
     );
   }
 
@@ -188,12 +243,12 @@ class _MobileTouchOverlayState extends State<MobileTouchOverlay> {
       onTapUp: (_) => _toggleButton(bit, false),
       onTapCancel: () => _toggleButton(bit, false),
       child: Container(
-        width: 48,
-        height: 48,
+        width: 46,
+        height: 46,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: active ? Colors.tealAccent : Colors.white.withValues(alpha: 0.16),
+          color: active ? const Color(0xFF38EF7D) : Colors.white.withValues(alpha: 0.16),
           border: Border.all(color: Colors.white38),
         ),
         child: Text(
@@ -208,17 +263,14 @@ class _MobileTouchOverlayState extends State<MobileTouchOverlay> {
   }
 
   Widget _keyChip(String label, int keycode, int mod) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: InkWell(
-        onTap: () => widget.onShortcutKey(keycode, mod),
-        borderRadius: BorderRadius.circular(8),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          child: Text(
-            label,
-            style: const TextStyle(color: Colors.white70, fontSize: 12),
-          ),
+    return InkWell(
+      onTap: () => widget.onShortcutKey(keycode, mod),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        child: Text(
+          label,
+          style: const TextStyle(color: Colors.white70, fontSize: 11.5),
         ),
       ),
     );

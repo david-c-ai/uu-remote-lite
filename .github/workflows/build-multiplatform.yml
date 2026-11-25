@@ -1,4 +1,4 @@
-name: Build All Platforms (Server-Linux / macOS / iOS / Windows / Android / Linux)
+name: Build DirRemote All Platforms (Server-Linux / macOS / iOS / Windows / Android / Linux)
 
 on:
   push:
@@ -14,7 +14,7 @@ jobs:
   # 1. Linux One-Click Standalone Server (Static x86_64 + start/stop/systemd)
   # ============================================================================
   build-server-linux:
-    name: Package Linux One-Click Server (.tar.gz)
+    name: Package DirRemote Linux Server (.tar.gz)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -22,40 +22,40 @@ jobs:
 
       - name: Build zero-dependency static Linux server & bundle scripts
         run: |
-          mkdir -p uu-server-linux
+          mkdir -p dir-server-linux
           g++ -std=c++20 -O3 -static -pthread -Iserver-lite/include \
             server-lite/src/server_runtime.cpp server-lite/src/main.cpp \
-            -o uu-server-linux/uu-server-lite || \
+            -o dir-server-linux/dir-server || \
           g++ -std=c++20 -O3 -static-libgcc -static-libstdc++ -pthread -Iserver-lite/include \
             server-lite/src/server_runtime.cpp server-lite/src/main.cpp \
-            -o uu-server-linux/uu-server-lite
-          strip -s uu-server-linux/uu-server-lite
+            -o dir-server-linux/dir-server
+          strip -s dir-server-linux/dir-server
 
-          cp server-lite/scripts/start.sh uu-server-linux/
-          cp server-lite/scripts/stop.sh uu-server-linux/
-          cp server-lite/scripts/status.sh uu-server-linux/
-          cp server-lite/scripts/install-systemd.sh uu-server-linux/
-          chmod +x uu-server-linux/*.sh uu-server-linux/uu-server-lite
+          cp server-lite/scripts/start.sh dir-server-linux/
+          cp server-lite/scripts/stop.sh dir-server-linux/
+          cp server-lite/scripts/status.sh dir-server-linux/
+          cp server-lite/scripts/install-systemd.sh dir-server-linux/
+          chmod +x dir-server-linux/*.sh dir-server-linux/dir-server
 
-          tar -czf UURemoteLite-Server-Linux-x64.tar.gz uu-server-linux
+          tar -czf DirRemote-Server-Linux-x64.tar.gz dir-server-linux
 
       - name: Upload Linux One-Click Server Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UURemoteLite-Server-Linux-x64
-          path: UURemoteLite-Server-Linux-x64.tar.gz
+          name: DirRemote-Server-Linux-x64
+          path: DirRemote-Server-Linux-x64.tar.gz
 
   # ============================================================================
   # 2. macOS Client + Host (.dmg)
   # ============================================================================
   build-macos:
-    name: Package macOS (.dmg)
+    name: Package DirRemote macOS (.dmg)
     runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build native libuucore.dylib & run E2E benchmark tests
+      - name: Build native libdircore.dylib & run E2E benchmark tests
         run: make test
 
       - name: Setup Flutter SDK
@@ -66,11 +66,13 @@ jobs:
       - name: Scaffold & build Flutter macOS App
         working-directory: client_flutter
         run: |
-          cp -R lib /tmp/uu_lib_backup
-          cp pubspec.yaml /tmp/uu_pubspec_backup.yaml
-          flutter create . --project-name uu_remote_lite --platforms=macos
-          rm -rf lib && mv /tmp/uu_lib_backup lib
-          mv /tmp/uu_pubspec_backup.yaml pubspec.yaml
+          cp -R lib /tmp/dir_lib_backup
+          cp pubspec.yaml /tmp/dir_pubspec_backup.yaml
+          flutter create . --project-name dir_remote --org com.dirremote.app --platforms=macos
+          rm -rf lib && mv /tmp/dir_lib_backup lib
+          mv /tmp/dir_pubspec_backup.yaml pubspec.yaml
+
+          sed -i '' 's/PRODUCT_NAME = .*/PRODUCT_NAME = DirRemote/' macos/Runner/Configs/AppInfo.xcconfig || true
 
           cat > macos/Runner/Release.entitlements << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -91,42 +93,42 @@ jobs:
           flutter pub get
           flutter build macos --release
 
-      - name: Bundle libuucore.dylib & package DMG
+      - name: Bundle libdircore.dylib & package DMG
         run: |
           APP_PATH=$(ls -d client_flutter/build/macos/Build/Products/Release/*.app | head -n 1)
           mkdir -p "$APP_PATH/Contents/Frameworks"
-          cp build/libuucore.dylib "$APP_PATH/Contents/Frameworks/libuucore.dylib"
+          cp build/libdircore.dylib "$APP_PATH/Contents/Frameworks/libdircore.dylib"
           codesign --force --deep -s - "$APP_PATH"
 
           mkdir -p dist-macos
-          cp -R "$APP_PATH" dist-macos/UURemoteLite.app
-          cp build/uu-server-lite dist-macos/uu-server-lite-macos
-          hdiutil create -volname "UURemoteLite" -srcfolder dist-macos -ov -format UDZO UURemoteLite-macOS.dmg
+          cp -R "$APP_PATH" dist-macos/DirRemote.app
+          cp build/dir-server dist-macos/dir-server-macos
+          hdiutil create -volname "DirRemote" -srcfolder dist-macos -ov -format UDZO DirRemote-macOS.dmg
 
       - name: Upload macOS DMG Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UURemoteLite-macOS
-          path: UURemoteLite-macOS.dmg
+          name: DirRemote-macOS
+          path: DirRemote-macOS.dmg
 
   # ============================================================================
   # 3. iOS / iPadOS Controller App (.ipa Unsigned — for Sideloadly / AltStore / Xcode)
   # ============================================================================
   build-ios:
-    name: Package iOS / iPadOS (.ipa)
+    name: Package DirRemote iOS / iPadOS (.ipa)
     runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build native arm64 iOS uucore.framework (with VideoToolbox HEVC)
+      - name: Build native arm64 iOS dircore.framework (with VideoToolbox HEVC)
         run: |
           IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          mkdir -p build-ios/uucore.framework
+          mkdir -p build-ios/dircore.framework
 
           xcrun --sdk iphoneos clang++ -std=c++20 -O3 -flto -ObjC++ -fobjc-arc -fPIC \
             -arch arm64 -isysroot "$IOS_SDK" -miphoneos-version-min=15.0 \
-            -dynamiclib -install_name @rpath/uucore.framework/uucore \
+            -dynamiclib -install_name @rpath/dircore.framework/dircore \
             -Icore/include -Iserver-lite/include \
             server-lite/src/server_runtime.cpp \
             core/src/crypto_e2ee.cpp \
@@ -135,29 +137,29 @@ jobs:
             core/src/codec_hal.cpp \
             core/src/hid_clipboard_file.cpp \
             core/src/session_engine.cpp \
-            core/src/uucore_ffi.cpp \
+            core/src/dircore_ffi.cpp \
             -framework Foundation -framework CoreFoundation -framework CoreGraphics \
             -framework CoreVideo -framework CoreMedia -framework VideoToolbox -lcompression \
-            -o build-ios/uucore.framework/uucore
-          strip -x build-ios/uucore.framework/uucore
+            -o build-ios/dircore.framework/dircore
+          strip -x build-ios/dircore.framework/dircore
 
-          cat > build-ios/uucore.framework/Info.plist << 'EOF'
+          cat > build-ios/dircore.framework/Info.plist << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>CFBundleExecutable</key>
-            <string>uucore</string>
+            <string>dircore</string>
             <key>CFBundleIdentifier</key>
-            <string>com.uuremotelite.uucore</string>
+            <string>com.dirremote.dircore</string>
             <key>CFBundleName</key>
-            <string>uucore</string>
+            <string>dircore</string>
             <key>CFBundlePackageType</key>
             <string>FMWK</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.0.0</string>
+            <string>1.1.0</string>
             <key>CFBundleVersion</key>
-            <string>1</string>
+            <string>2</string>
             <key>MinimumOSVersion</key>
             <string>15.0</string>
           </dict>
@@ -172,43 +174,45 @@ jobs:
       - name: Scaffold & build Flutter iOS App (no-codesign)
         working-directory: client_flutter
         run: |
-          cp -R lib /tmp/uu_ios_lib
-          cp pubspec.yaml /tmp/uu_ios_pubspec.yaml
-          flutter create . --project-name uu_remote_lite --platforms=ios
-          rm -rf lib && mv /tmp/uu_ios_lib lib
-          mv /tmp/uu_ios_pubspec.yaml pubspec.yaml
+          cp -R lib /tmp/dir_ios_lib
+          cp pubspec.yaml /tmp/dir_ios_pubspec.yaml
+          flutter create . --project-name dir_remote --org com.dirremote.app --platforms=ios
+          rm -rf lib && mv /tmp/dir_ios_lib lib
+          mv /tmp/dir_ios_pubspec.yaml pubspec.yaml
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName DirRemote" ios/Runner/Info.plist || true
 
           flutter pub get
           flutter build ios --release --no-codesign
 
-      - name: Embed uucore.framework & package Unsigned IPA
+      - name: Embed dircore.framework & package Unsigned IPA
         run: |
           mkdir -p Payload
           cp -R client_flutter/build/ios/iphoneos/Runner.app Payload/Runner.app
           mkdir -p Payload/Runner.app/Frameworks
-          cp -R build-ios/uucore.framework Payload/Runner.app/Frameworks/uucore.framework
-          zip -qry UURemoteLite-iOS-Unsigned.ipa Payload
+          cp -R build-ios/dircore.framework Payload/Runner.app/Frameworks/dircore.framework
+          zip -qry DirRemote-iOS-Unsigned.ipa Payload
 
       - name: Upload iOS Unsigned IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UURemoteLite-iOS-Unsigned
-          path: UURemoteLite-iOS-Unsigned.ipa
+          name: DirRemote-iOS-Unsigned
+          path: DirRemote-iOS-Unsigned.ipa
 
   # ============================================================================
   # 4. Windows x64 Client + Host + One-Click Server (.zip)
   # ============================================================================
   build-windows:
-    name: Package Windows x64 (.zip)
+    name: Package DirRemote Windows x64 (.zip)
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build native uucore.dll & uu-server-lite.exe (MSVC C++20)
+      - name: Build native dircore.dll & dir-server.exe (MSVC C++20)
         run: |
           cmake -B build-win -DCMAKE_BUILD_TYPE=Release
-          cmake --build build-win --config Release --target uucore uu-server-lite
+          cmake --build build-win --config Release --target dircore dir-server
 
       - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
@@ -219,36 +223,36 @@ jobs:
         shell: bash
         working-directory: client_flutter
         run: |
-          cp -R lib ../uu_lib_backup
-          cp pubspec.yaml ../uu_pubspec_backup.yaml
-          flutter create . --project-name uu_remote_lite --platforms=windows
-          rm -rf lib && mv ../uu_lib_backup lib
-          mv ../uu_pubspec_backup.yaml pubspec.yaml
+          cp -R lib ../dir_lib_backup
+          cp pubspec.yaml ../dir_pubspec_backup.yaml
+          flutter create . --project-name dir_remote --org com.dirremote.app --platforms=windows
+          rm -rf lib && mv ../dir_lib_backup lib
+          mv ../dir_pubspec_backup.yaml pubspec.yaml
           flutter pub get
           flutter build windows --release
 
-      - name: Bundle uucore.dll, uu-server-lite.exe & start-server.bat into ZIP
+      - name: Bundle dircore.dll, dir-server.exe & start-server.bat into ZIP
         shell: pwsh
         run: |
           $relDir = "client_flutter/build/windows/x64/runner/Release"
-          $dllPath = (Get-ChildItem -Path "build-win" -Filter "uucore.dll" -Recurse | Select-Object -First 1).FullName
-          $srvPath = (Get-ChildItem -Path "build-win" -Filter "uu-server-lite.exe" -Recurse | Select-Object -First 1).FullName
-          Copy-Item $dllPath "$relDir/uucore.dll" -Force
-          Copy-Item $srvPath "$relDir/uu-server-lite.exe" -Force
+          $dllPath = (Get-ChildItem -Path "build-win" -Filter "dircore.dll" -Recurse | Select-Object -First 1).FullName
+          $srvPath = (Get-ChildItem -Path "build-win" -Filter "dir-server.exe" -Recurse | Select-Object -First 1).FullName
+          Copy-Item $dllPath "$relDir/dircore.dll" -Force
+          Copy-Item $srvPath "$relDir/dir-server.exe" -Force
           Copy-Item "server-lite/scripts/start-server.bat" "$relDir/start-server.bat" -Force
-          Compress-Archive -Path "$relDir/*" -DestinationPath "UURemoteLite-Windows-x64.zip" -Force
+          Compress-Archive -Path "$relDir/*" -DestinationPath "DirRemote-Windows-x64.zip" -Force
 
       - name: Upload Windows Portable ZIP Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UURemoteLite-Windows-x64
-          path: UURemoteLite-Windows-x64.zip
+          name: DirRemote-Windows-x64
+          path: DirRemote-Windows-x64.zip
 
   # ============================================================================
   # 5. Android Controller App (.apk)
   # ============================================================================
   build-android:
-    name: Package Android (.apk)
+    name: Package DirRemote Android (.apk)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -265,7 +269,7 @@ jobs:
         with:
           channel: stable
 
-      - name: Build Android NDK libuucore.so (arm64-v8a & x86_64)
+      - name: Build Android NDK libdircore.so (arm64-v8a & x86_64)
         run: |
           NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | sort -V | tail -n 1)
           for ABI in arm64-v8a x86_64; do
@@ -274,43 +278,45 @@ jobs:
               -DANDROID_ABI=$ABI \
               -DANDROID_PLATFORM=android-26 \
               -DCMAKE_BUILD_TYPE=Release \
-              -DUU_BUILD_TOOLS=OFF
+              -DDIR_BUILD_TOOLS=OFF
             cmake --build build-android-$ABI --config Release -j4
           done
 
       - name: Scaffold & build Flutter Android APK
         working-directory: client_flutter
         run: |
-          cp -R lib /tmp/uu_lib_backup
-          cp pubspec.yaml /tmp/uu_pubspec_backup.yaml
-          flutter create . --project-name uu_remote_lite --platforms=android
-          rm -rf lib && mv /tmp/uu_lib_backup lib
-          mv /tmp/uu_pubspec_backup.yaml pubspec.yaml
+          cp -R lib /tmp/dir_lib_backup
+          cp pubspec.yaml /tmp/dir_pubspec_backup.yaml
+          flutter create . --project-name dir_remote --org com.dirremote.app --platforms=android
+          rm -rf lib && mv /tmp/dir_lib_backup lib
+          mv /tmp/dir_pubspec_backup.yaml pubspec.yaml
 
+          # Ensure INTERNET permission & set clean app launcher name "DirRemote"
           if ! grep -q "android.permission.INTERNET" android/app/src/main/AndroidManifest.xml; then
             sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>/' android/app/src/main/AndroidManifest.xml
           fi
+          sed -i 's/android:label="[^"]*"/android:label="DirRemote"/' android/app/src/main/AndroidManifest.xml
 
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           mkdir -p android/app/src/main/jniLibs/x86_64
-          cp ../build-android-arm64-v8a/libuucore.so android/app/src/main/jniLibs/arm64-v8a/
-          cp ../build-android-x86_64/libuucore.so android/app/src/main/jniLibs/x86_64/
+          cp ../build-android-arm64-v8a/libdircore.so android/app/src/main/jniLibs/arm64-v8a/
+          cp ../build-android-x86_64/libdircore.so android/app/src/main/jniLibs/x86_64/
 
           flutter pub get
           flutter build apk --release
-          cp build/app/outputs/flutter-apk/app-release.apk ../UURemoteLite-Android.apk
+          cp build/app/outputs/flutter-apk/app-release.apk ../DirRemote-Android.apk
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UURemoteLite-Android
-          path: UURemoteLite-Android.apk
+          name: DirRemote-Android
+          path: DirRemote-Android.apk
 
   # ============================================================================
   # 6. Linux Desktop Client (.tar.gz)
   # ============================================================================
   build-linux-client:
-    name: Package Linux Desktop Client (.tar.gz)
+    name: Package DirRemote Linux Client (.tar.gz)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -321,9 +327,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
 
-      - name: Build native Linux libuucore.so
+      - name: Build native Linux libdircore.so
         run: |
-          cmake -B build-linux -DCMAKE_BUILD_TYPE=Release -DUU_BUILD_TOOLS=OFF
+          cmake -B build-linux -DCMAKE_BUILD_TYPE=Release -DDIR_BUILD_TOOLS=OFF
           cmake --build build-linux --config Release -j4
 
       - name: Setup Flutter SDK
@@ -334,30 +340,30 @@ jobs:
       - name: Scaffold & build Flutter Linux Desktop App
         working-directory: client_flutter
         run: |
-          cp -R lib /tmp/uu_linux_lib
-          cp pubspec.yaml /tmp/uu_linux_pubspec.yaml
-          flutter create . --project-name uu_remote_lite --platforms=linux
-          rm -rf lib && mv /tmp/uu_linux_lib lib
-          mv /tmp/uu_linux_pubspec.yaml pubspec.yaml
+          cp -R lib /tmp/dir_linux_lib
+          cp pubspec.yaml /tmp/dir_linux_pubspec.yaml
+          flutter create . --project-name dir_remote --org com.dirremote.app --platforms=linux
+          rm -rf lib && mv /tmp/dir_linux_lib lib
+          mv /tmp/dir_linux_pubspec.yaml pubspec.yaml
 
           flutter pub get
           flutter build linux --release
 
-      - name: Bundle libuucore.so & archive Linux Client
+      - name: Bundle libdircore.so & archive Linux Client
         run: |
           BUNDLE_DIR="client_flutter/build/linux/x64/release/bundle"
           mkdir -p "$BUNDLE_DIR/lib"
-          cp build-linux/libuucore.so "$BUNDLE_DIR/lib/libuucore.so"
-          tar -czf UURemoteLite-Client-Linux-x64.tar.gz -C "$BUNDLE_DIR" .
+          cp build-linux/libdircore.so "$BUNDLE_DIR/lib/libdircore.so"
+          tar -czf DirRemote-Client-Linux-x64.tar.gz -C "$BUNDLE_DIR" .
 
       - name: Upload Linux Desktop Client Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UURemoteLite-Client-Linux-x64
-          path: UURemoteLite-Client-Linux-x64.tar.gz
+          name: DirRemote-Client-Linux-x64
+          path: DirRemote-Client-Linux-x64.tar.gz
 
   # ============================================================================
-  # 7. Auto-Publish GitHub Release on Tag Push (e.g. git tag v1.0.0 && git push --tags)
+  # 7. Auto-Publish GitHub Release on Tag Push (e.g. git tag v1.1.0 && git push --tags)
   # ============================================================================
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -374,9 +380,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-assets/UURemoteLite-Server-Linux-x64.tar.gz
-            release-assets/UURemoteLite-macOS.dmg
-            release-assets/UURemoteLite-iOS-Unsigned.ipa
-            release-assets/UURemoteLite-Windows-x64.zip
-            release-assets/UURemoteLite-Android.apk
-            release-assets/UURemoteLite-Client-Linux-x64.tar.gz
+            release-assets/DirRemote-Server-Linux-x64.tar.gz
+            release-assets/DirRemote-macOS.dmg
+            release-assets/DirRemote-iOS-Unsigned.ipa
+            release-assets/DirRemote-Windows-x64.zip
+            release-assets/DirRemote-Android.apk
+            release-assets/DirRemote-Client-Linux-x64.tar.gz

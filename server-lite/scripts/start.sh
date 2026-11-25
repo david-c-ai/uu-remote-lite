@@ -8,15 +8,15 @@ HBBR_PORT="${2:-21117}"
 PID_FILE="./server.pid"
 LOG_FILE="./server.log"
 
-chmod +x ./uu-server-lite
+chmod +x ./dir-server
 
 if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-  echo "[uu-server-lite] 服务已在运行中 (PID: $(cat "$PID_FILE"))"
+  echo "[dir-server] 服务已在运行中 (PID: $(cat "$PID_FILE"))"
   echo "查看状态请运行: ./status.sh  |  停止请运行: ./stop.sh"
   exit 0
 fi
 
-nohup ./uu-server-lite -p "$HBBS_PORT" -r "$HBBR_PORT" >> "$LOG_FILE" 2>&1 &
+nohup ./dir-server -p "$HBBS_PORT" -r "$HBBR_PORT" >> "$LOG_FILE" 2>&1 &
 NEW_PID=$!
 echo "$NEW_PID" > "$PID_FILE"
 sleep 1
@@ -31,7 +31,7 @@ PUB_IP=$(curl -s --max-time 3 https://api.ipify.org || curl -s --max-time 3 http
 LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
 
 echo "=================================================================="
-echo "  UU-Remote-Lite 服务端已一键后台启动成功! (PID: $NEW_PID)"
+echo "  DirRemote 服务端已一键后台启动成功! (PID: $NEW_PID)"
 echo "------------------------------------------------------------------"
 echo "  公网连接地址 (填到客户端):  $PUB_IP"
 echo "  内网连接地址 (局域网测试):  $LAN_IP"

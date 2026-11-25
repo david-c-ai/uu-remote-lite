@@ -5,16 +5,16 @@ cd "$(dirname "$0")"
 PID_FILE="./server.pid"
 LOG_FILE="./server.log"
 
-if systemctl is-active --quiet uu-server-lite 2>/dev/null; then
+if systemctl is-active --quiet dir-server 2>/dev/null; then
   echo "=== systemd 守护服务运行中 ==="
-  systemctl status uu-server-lite --no-pager -n 10
+  systemctl status dir-server --no-pager -n 10
   exit 0
 fi
 
 if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-  echo "[RUNNING] uu-server-lite 后台运行中 (PID: $(cat "$PID_FILE"))"
+  echo "[RUNNING] dir-server 后台运行中 (PID: $(cat "$PID_FILE"))"
 else
-  echo "[STOPPED] uu-server-lite 当前未运行 (可执行 ./start.sh 启动)"
+  echo "[STOPPED] dir-server 当前未运行 (可执行 ./start.sh 启动)"
 fi
 
 if [ -f "$LOG_FILE" ]; then

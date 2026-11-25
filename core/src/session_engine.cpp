@@ -277,12 +277,13 @@ void PeerNode::SendGamepad(const PayloadGamepad& pad) {
     SendEncrypted(QoSLane::kP0_FastInput, PacketType::kGamepadState, &pad, sizeof(pad));
 }
 
-void PeerNode::SetQualityProfile(QualityProfile profile, uint8_t target_fps, bool privacy_curtain) {
+void PeerNode::SetQualityProfile(QualityProfile profile, uint8_t target_fps,
+                                 bool privacy_curtain, uint8_t monitor_index) {
     bwe_.SetProfile(profile);
     PayloadQualityControl qc{};
     qc.profile = profile;
     qc.target_fps = target_fps;
-    qc.monitor_index = 0;
+    qc.monitor_index = monitor_index;
     qc.privacy_curtain = privacy_curtain ? 1 : 0;
     qc.max_bitrate_kbps = (profile == QualityProfile::kUltraSaver300K) ? 600 : 25000;
     uint32_t rseq = p2_seq_.fetch_add(1);
@@ -702,9 +703,15 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
                 PayloadQualityControl qc{};
                 std::memcpy(&qc, pt.data(), sizeof(qc));
                 bwe_.SetProfile(qc.profile);
+                if (capturer_ && qc.monitor_index != telemetry_.active_monitor) {
+                    if (capturer_->SelectMonitor(qc.monitor_index)) {
+                        scheduler_.ClearMediaQueue();
+                    }
+                }
                 force_next_idr_.store(true);
                 std::lock_guard<std::mutex> lk(state_mu_);
                 telemetry_.active_profile = qc.profile;
+                telemetry_.active_monitor = qc.monitor_index;
                 telemetry_.privacy_curtain_on = (qc.privacy_curtain != 0);
             }
             break;
@@ -832,6 +839,10 @@ void PeerNode::HandleVideoPacket(PacketType type, const uint8_t* payload, size_t
         telemetry_.remote_width = df.width;
         telemetry_.remote_height = df.height;
         telemetry_.active_codec = df.codec;
+        if (vhdr.monitor_count > 0) {
+            telemetry_.monitor_count = vhdr.monitor_count;
+            telemetry_.active_monitor = vhdr.active_monitor;
+        }
         ++telemetry_.frames_decoded;
         if (assembly.used_fec) {
             ++telemetry_.fec_recovered_frames;
@@ -896,7 +907,12 @@ void PeerNode::HostCaptureLoop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
         }
-        input_dispatcher_.SetDisplayBounds(frame.width, frame.height);
+        MonitorInfo mon = capturer_->CurrentMonitor();
+        input_dispatcher_.SetDisplayBounds(
+            mon.width > 0 ? mon.width : frame.width,
+            mon.height > 0 ? mon.height : frame.height,
+            mon.origin_x,
+            mon.origin_y);
 
         NetworkFeedback net_fb{};
         {
@@ -933,6 +949,9 @@ void PeerNode::HostCaptureLoop() {
             }
             auto parities = AdaptiveFecCodec::GenerateParity(data_shards, fec_group);
 
+            uint8_t mon_cnt = capturer_->MonitorCount();
+            uint8_t act_mon = static_cast<uint8_t>(mon.index);
+
             for (uint16_t i = 0; i < data_shards.size(); ++i) {
                 PayloadVideoShardHeader vhdr{};
                 vhdr.frame_id = au.frame_id;
@@ -943,6 +962,8 @@ void PeerNode::HostCaptureLoop() {
                 vhdr.height = au.height;
                 vhdr.codec = au.codec;
                 vhdr.is_keyframe = au.is_keyframe ? 1 : 0;
+                vhdr.monitor_count = mon_cnt;
+                vhdr.active_monitor = act_mon;
                 vhdr.dirty_rect_cnt = au.dirty_tile_count;
                 vhdr.total_frame_bytes = static_cast<uint32_t>(au.payload.size());
                 vhdr.shard_bytes = static_cast<uint16_t>(data_shards[i].size());
@@ -963,6 +984,8 @@ void PeerNode::HostCaptureLoop() {
                 phdr.height = au.height;
                 phdr.codec = au.codec;
                 phdr.is_keyframe = au.is_keyframe ? 1 : 0;
+                phdr.monitor_count = mon_cnt;
+                phdr.active_monitor = act_mon;
                 phdr.dirty_rect_cnt = p.group_count;
                 phdr.total_frame_bytes = static_cast<uint32_t>(au.payload.size());
                 phdr.shard_bytes = static_cast<uint16_t>(p.parity_bytes.size());

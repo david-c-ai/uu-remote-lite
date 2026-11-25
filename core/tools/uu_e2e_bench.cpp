@@ -4,7 +4,7 @@
 #include "fec_qos.hpp"
 #include "server_runtime.hpp"
 #include "session_engine.hpp"
-#include "uucore_ffi.h"
+#include "dircore_ffi.h"
 
 #include <cassert>
 #include <chrono>
@@ -279,24 +279,28 @@ int TestCAbiFfiSmoke() {
     server::LiteServer srv(scfg);
     CHECK_OK(srv.Start(), "LiteServer for FFI test");
 
-    UUHandle h_host = uu_node_create("333222111", "4321", "127.0.0.1",
-                                     srv.BoundRendezvousPort(), srv.BoundRelayPort(), 1);
-    UUHandle h_cli = uu_node_create("777888999", "4321", "127.0.0.1",
-                                    srv.BoundRendezvousPort(), srv.BoundRelayPort(), 0);
+    DirHandle h_host = dir_node_create("333222111", "4321", "127.0.0.1",
+                                       srv.BoundRendezvousPort(), srv.BoundRelayPort(), 1);
+    DirHandle h_cli = dir_node_create("777888999", "4321", "127.0.0.1",
+                                      srv.BoundRendezvousPort(), srv.BoundRelayPort(), 0);
     CHECK_OK(h_host != nullptr && h_cli != nullptr, "C ABI handles must allocate");
-    CHECK_OK(uu_node_start(h_host) == 1, "FFI host start");
+    CHECK_OK(dir_node_start(h_host) == 1, "FFI host start");
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
-    CHECK_OK(uu_node_start(h_cli) == 1, "FFI client start");
-    CHECK_OK(uu_node_connect(h_cli, "333222111", 1500) == 1, "FFI client connect");
+    CHECK_OK(dir_node_start(h_cli) == 1, "FFI client start");
+    CHECK_OK(dir_node_connect(h_cli, "333222111", 1500) == 1, "FFI client connect");
 
-    UUTelemetryC t{};
-    uu_node_get_telemetry(h_cli, &t);
+    // Switch to Monitor #1 via FFI options and verify RGBA frame copy
+    dir_node_set_options(h_cli, 1, 60, 0, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    DirTelemetryC t{};
+    dir_node_get_telemetry(h_cli, &t);
     CHECK_OK(t.transport_path == 1, "FFI telemetry must report active connection");
 
-    uu_node_destroy(h_cli);
-    uu_node_destroy(h_host);
+    dir_node_destroy(h_cli);
+    dir_node_destroy(h_host);
     srv.Stop();
-    std::printf("[PASS] 5/5 Flutter C ABI FFI Bindings (uu_node_create/connect/telemetry/destroy)\n");
+    std::printf("[PASS] 5/5 DirRemote Flutter C ABI FFI Bindings & Multi-Monitor Switch\n");
     return 0;
 }
 
@@ -304,7 +308,7 @@ int TestCAbiFfiSmoke() {
 
 int main() {
     std::printf("====================================================================\n");
-    std::printf("  UU-Remote-Lite End-to-End Verification & Performance Suite\n");
+    std::printf("  DirRemote End-to-End Verification & Performance Suite\n");
     std::printf("====================================================================\n");
 
     if (TestCryptoSuite() != 0) return 1;

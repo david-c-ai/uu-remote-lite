@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
         } else if ((arg == "-r" || arg == "--relay-port") && i + 1 < argc) {
             cfg.relay_port = static_cast<uint16_t>(std::atoi(argv[++i]));
         } else if (arg == "-h" || arg == "--help") {
-            std::printf("Usage: uu-server-lite [-p hbbs_port (default 21116)] [-r hbbr_port (default 21117)]\n");
+            std::printf("Usage: dir-server [-p hbbs_port (default 21116)] [-r hbbr_port (default 21117)]\n");
             return 0;
         }
     }
@@ -30,18 +30,18 @@ int main(int argc, char** argv) {
 
     uu::server::LiteServer server(cfg);
     if (!server.Start()) {
-        std::fprintf(stderr, "[uu-server-lite] Failed to bind UDP ports %u / %u\n",
+        std::fprintf(stderr, "[dir-server] Failed to bind UDP ports %u / %u\n",
                      cfg.rendezvous_port, cfg.relay_port);
         return 1;
     }
 
-    std::printf("[uu-server-lite] Started ultra-lightweight Rendezvous (UDP :%u) + Zero-Copy Relay (UDP :%u)\n",
+    std::printf("[dir-server] Started DirRemote Rendezvous (UDP :%u) + Zero-Copy Relay (UDP :%u)\n",
                 server.BoundRendezvousPort(), server.BoundRelayPort());
 
     while (!g_stop) {
         std::this_thread::sleep_for(std::chrono::seconds(5));
         auto st = server.GetStats();
-        std::printf("[uu-server-lite] peers=%llu punch_req=%llu active_relays=%llu relayed_pkts=%llu relayed_KB=%.1f\n",
+        std::printf("[dir-server] peers=%llu punch_req=%llu active_relays=%llu relayed_pkts=%llu relayed_KB=%.1f\n",
                     static_cast<unsigned long long>(st.registered_peers),
                     static_cast<unsigned long long>(st.punch_requests),
                     static_cast<unsigned long long>(st.active_relay_sessions),
@@ -51,6 +51,6 @@ int main(int argc, char** argv) {
     }
 
     server.Stop();
-    std::printf("[uu-server-lite] Gracefully stopped.\n");
+    std::printf("[dir-server] Gracefully stopped.\n");
     return 0;
 }

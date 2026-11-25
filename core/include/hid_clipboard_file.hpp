@@ -16,7 +16,7 @@ public:
     explicit InputDispatcher(bool enable_os_injection = false);
 
     void SetOsInjectionEnabled(bool enabled) { enable_os_injection_ = enabled; }
-    void SetDisplayBounds(uint16_t width, uint16_t height);
+    void SetDisplayBounds(uint16_t width, uint16_t height, int32_t origin_x = 0, int32_t origin_y = 0);
     void ApplyMouse(const PayloadMouseEvent& ev);
     void ApplyKey(const PayloadKeyInput& ev);
     void ApplyGamepad(const PayloadGamepad& pad);
@@ -29,6 +29,8 @@ public:
 
 private:
     bool enable_os_injection_ = false;
+    int32_t origin_x_ = 0;
+    int32_t origin_y_ = 0;
     uint16_t display_w_ = 1920;
     uint16_t display_h_ = 1080;
     uint8_t prev_buttons_ = 0;

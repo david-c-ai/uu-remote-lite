@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(UURemoteLite VERSION 2.0.0 LANGUAGES CXX)
+project(DirRemote VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,28 +12,28 @@ if(MSVC)
 endif()
 
 if(ANDROID OR IOS)
-    option(UU_BUILD_TOOLS "Build server and benchmark executables" OFF)
+    option(DIR_BUILD_TOOLS "Build server and benchmark executables" OFF)
 else()
-    option(UU_BUILD_TOOLS "Build server and benchmark executables" ON)
+    option(DIR_BUILD_TOOLS "Build server and benchmark executables" ON)
 endif()
 
 find_package(Threads REQUIRED)
 
-# 1. Ultra-lightweight Rendezvous (hbbs) + Zero-Copy Relay (hbbr) Server
-if(UU_BUILD_TOOLS)
-    add_executable(uu-server-lite
+# 1. DirRemote Rendezvous (hbbs) + Zero-Copy Relay (hbbr) Server
+if(DIR_BUILD_TOOLS)
+    add_executable(dir-server
         server-lite/src/server_runtime.cpp
         server-lite/src/main.cpp
     )
-    target_include_directories(uu-server-lite PRIVATE server-lite/include)
-    target_link_libraries(uu-server-lite PRIVATE Threads::Threads)
+    target_include_directories(dir-server PRIVATE server-lite/include)
+    target_link_libraries(dir-server PRIVATE Threads::Threads)
     if(WIN32)
-        target_link_libraries(uu-server-lite PRIVATE ws2_32)
+        target_link_libraries(dir-server PRIVATE ws2_32)
     endif()
 endif()
 
-# 2. Cross-Platform Core Engine Shared Library (for Flutter dart:ffi on Win/Mac/iOS/Android)
-set(UUCORE_SOURCES
+# 2. Cross-Platform Core Engine Shared Library (for Flutter dart:ffi on Win/Mac/iOS/Android/Linux)
+set(DIRCORE_SOURCES
     server-lite/src/server_runtime.cpp
     core/src/crypto_e2ee.cpp
     core/src/fec_qos.cpp
@@ -41,11 +41,11 @@ set(UUCORE_SOURCES
     core/src/codec_hal.cpp
     core/src/hid_clipboard_file.cpp
     core/src/session_engine.cpp
-    core/src/uucore_ffi.cpp
+    core/src/dircore_ffi.cpp
 )
 
-add_library(uucore SHARED ${UUCORE_SOURCES})
-target_include_directories(uucore PUBLIC core/include server-lite/include)
+add_library(dircore SHARED ${DIRCORE_SOURCES})
+target_include_directories(dircore PUBLIC core/include server-lite/include)
 
 if(APPLE)
     find_library(FOUNDATION_FW Foundation)
@@ -55,7 +55,7 @@ if(APPLE)
     find_library(VIDEOTOOLBOX_FW VideoToolbox)
     find_library(COREFOUNDATION_FW CoreFoundation)
     set_source_files_properties(core/src/capture_hal.cpp PROPERTIES COMPILE_FLAGS "-ObjC++ -fobjc-arc")
-    target_link_libraries(uucore PRIVATE
+    target_link_libraries(dircore PRIVATE
         ${FOUNDATION_FW}
         ${COREFOUNDATION_FW}
         ${COREVIDEO_FW}
@@ -66,19 +66,19 @@ if(APPLE)
     if(NOT IOS)
         find_library(APPSERVICES_FW ApplicationServices)
         find_library(SCK_FW ScreenCaptureKit)
-        target_link_libraries(uucore PRIVATE ${COREGRAPHICS_FW} ${APPSERVICES_FW} ${SCK_FW})
+        target_link_libraries(dircore PRIVATE ${COREGRAPHICS_FW} ${APPSERVICES_FW} ${SCK_FW})
     endif()
 elseif(WIN32)
-    target_link_libraries(uucore PRIVATE ws2_32 d3d11 dxgi user32 gdi32)
+    target_link_libraries(dircore PRIVATE ws2_32 d3d11 dxgi user32 gdi32)
 elseif(ANDROID)
-    target_link_libraries(uucore PRIVATE mediandk log)
+    target_link_libraries(dircore PRIVATE mediandk log)
 else()
-    target_link_libraries(uucore PRIVATE Threads::Threads)
+    target_link_libraries(dircore PRIVATE Threads::Threads)
 endif()
 
 # 3. End-to-End Benchmark & Verification Suite
-if(UU_BUILD_TOOLS)
-    add_executable(uu-e2e-bench core/tools/uu_e2e_bench.cpp)
-    target_include_directories(uu-e2e-bench PRIVATE core/include server-lite/include)
-    target_link_libraries(uu-e2e-bench PRIVATE uucore)
+if(DIR_BUILD_TOOLS)
+    add_executable(dir-e2e-bench core/tools/uu_e2e_bench.cpp)
+    target_include_directories(dir-e2e-bench PRIVATE core/include server-lite/include)
+    target_link_libraries(dir-e2e-bench PRIVATE dircore)
 endif()

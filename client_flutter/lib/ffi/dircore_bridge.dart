@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import '../models/session_models.dart';
 
-final class UUTelemetryC extends ffi.Struct {
+final class DirTelemetryC extends ffi.Struct {
   @ffi.Uint8()
   external int transportPath;
   @ffi.Uint8()
@@ -13,6 +13,12 @@ final class UUTelemetryC extends ffi.Struct {
   external int activeCodec;
   @ffi.Uint8()
   external int privacyCurtain;
+  @ffi.Uint8()
+  external int monitorCount;
+  @ffi.Uint8()
+  external int activeMonitor;
+  @ffi.Uint16()
+  external int reservedPad;
 
   @ffi.Float()
   external double connectTimeMs;
@@ -28,6 +34,8 @@ final class UUTelemetryC extends ffi.Struct {
   external double avgEncodeMs;
   @ffi.Float()
   external double avgDecodeMs;
+  @ffi.Float()
+  external double reservedF;
 
   @ffi.Uint64()
   external int framesDecoded;
@@ -58,8 +66,8 @@ typedef _ConnectDart = int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, in
 typedef _VoidHandleNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
 typedef _VoidHandleDart = void Function(ffi.Pointer<ffi.Void>);
 
-typedef _GetTelemetryNative = ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<UUTelemetryC>);
-typedef _GetTelemetryDart = void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<UUTelemetryC>);
+typedef _GetTelemetryNative = ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<DirTelemetryC>);
+typedef _GetTelemetryDart = void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<DirTelemetryC>);
 
 typedef _CopyFrameNative = ffi.Int32 Function(
     ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint8>, ffi.Uint32, ffi.Pointer<ffi.Uint16>, ffi.Pointer<ffi.Uint16>);
@@ -77,8 +85,9 @@ typedef _SendGamepadNative = ffi.Void Function(
     ffi.Pointer<ffi.Void>, ffi.Uint16, ffi.Int16, ffi.Int16, ffi.Int16, ffi.Int16, ffi.Uint8, ffi.Uint8);
 typedef _SendGamepadDart = void Function(ffi.Pointer<ffi.Void>, int, int, int, int, int, int, int);
 
-typedef _SetQualityNative = ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Uint8, ffi.Uint8, ffi.Int32);
-typedef _SetQualityDart = void Function(ffi.Pointer<ffi.Void>, int, int, int);
+typedef _SetOptionsNative = ffi.Void Function(
+    ffi.Pointer<ffi.Void>, ffi.Uint8, ffi.Uint8, ffi.Int32, ffi.Uint8);
+typedef _SetOptionsDart = void Function(ffi.Pointer<ffi.Void>, int, int, int, int);
 
 typedef _SendClipboardNative = ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
 typedef _SendClipboardDart = void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
@@ -86,50 +95,50 @@ typedef _SendClipboardDart = void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Ut
 typedef _SendFileNative = ffi.Int32 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, ffi.Uint64);
 typedef _SendFileDart = int Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>, int);
 
-class UUCoreBridge {
-  UUCoreBridge._(this._lib) {
-    _create = _lib.lookupFunction<_CreateNative, _CreateDart>('uu_node_create');
-    _start = _lib.lookupFunction<_StartNative, _StartDart>('uu_node_start');
-    _connect = _lib.lookupFunction<_ConnectNative, _ConnectDart>('uu_node_connect');
-    _stop = _lib.lookupFunction<_VoidHandleNative, _VoidHandleDart>('uu_node_stop');
-    _destroy = _lib.lookupFunction<_VoidHandleNative, _VoidHandleDart>('uu_node_destroy');
-    _getTelemetry = _lib.lookupFunction<_GetTelemetryNative, _GetTelemetryDart>('uu_node_get_telemetry');
-    _copyFrame = _lib.lookupFunction<_CopyFrameNative, _CopyFrameDart>('uu_node_copy_frame_bgra');
-    _sendMouseEx = _lib.lookupFunction<_SendMouseExNative, _SendMouseExDart>('uu_node_send_mouse_ex');
-    _sendKey = _lib.lookupFunction<_SendKeyNative, _SendKeyDart>('uu_node_send_key');
-    _sendGamepad = _lib.lookupFunction<_SendGamepadNative, _SendGamepadDart>('uu_node_send_gamepad');
-    _setQuality = _lib.lookupFunction<_SetQualityNative, _SetQualityDart>('uu_node_set_quality');
-    _sendClipboard = _lib.lookupFunction<_SendClipboardNative, _SendClipboardDart>('uu_node_send_clipboard');
-    _sendFile = _lib.lookupFunction<_SendFileNative, _SendFileDart>('uu_node_send_file');
+class DirCoreBridge {
+  DirCoreBridge._(this._lib) {
+    _create = _lib.lookupFunction<_CreateNative, _CreateDart>('dir_node_create');
+    _start = _lib.lookupFunction<_StartNative, _StartDart>('dir_node_start');
+    _connect = _lib.lookupFunction<_ConnectNative, _ConnectDart>('dir_node_connect');
+    _stop = _lib.lookupFunction<_VoidHandleNative, _VoidHandleDart>('dir_node_stop');
+    _destroy = _lib.lookupFunction<_VoidHandleNative, _VoidHandleDart>('dir_node_destroy');
+    _getTelemetry = _lib.lookupFunction<_GetTelemetryNative, _GetTelemetryDart>('dir_node_get_telemetry');
+    _copyFrameRgba = _lib.lookupFunction<_CopyFrameNative, _CopyFrameDart>('dir_node_copy_frame_rgba');
+    _sendMouseEx = _lib.lookupFunction<_SendMouseExNative, _SendMouseExDart>('dir_node_send_mouse_ex');
+    _sendKey = _lib.lookupFunction<_SendKeyNative, _SendKeyDart>('dir_node_send_key');
+    _sendGamepad = _lib.lookupFunction<_SendGamepadNative, _SendGamepadDart>('dir_node_send_gamepad');
+    _setOptions = _lib.lookupFunction<_SetOptionsNative, _SetOptionsDart>('dir_node_set_options');
+    _sendClipboard = _lib.lookupFunction<_SendClipboardNative, _SendClipboardDart>('dir_node_send_clipboard');
+    _sendFile = _lib.lookupFunction<_SendFileNative, _SendFileDart>('dir_node_send_file');
   }
 
-  static UUCoreBridge? tryLoad() {
+  static DirCoreBridge? tryLoad() {
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final candidates = <String>[
       if (Platform.isIOS) ...[
-        '$exeDir/Frameworks/uucore.framework/uucore',
-        'uucore.framework/uucore',
-        '$exeDir/Frameworks/libuucore.dylib',
+        '$exeDir/Frameworks/dircore.framework/dircore',
+        'dircore.framework/dircore',
+        '$exeDir/Frameworks/libdircore.dylib',
       ] else if (Platform.isMacOS) ...[
-        '$exeDir/../Frameworks/libuucore.dylib',
-        '$exeDir/libuucore.dylib',
-        'libuucore.dylib',
-        '../build/libuucore.dylib',
+        '$exeDir/../Frameworks/libdircore.dylib',
+        '$exeDir/libdircore.dylib',
+        'libdircore.dylib',
+        '../build/libdircore.dylib',
       ] else if (Platform.isWindows) ...[
-        '$exeDir\\uucore.dll',
-        'uucore.dll',
+        '$exeDir\\dircore.dll',
+        'dircore.dll',
       ] else if (Platform.isLinux) ...[
-        '$exeDir/lib/libuucore.so',
-        '$exeDir/libuucore.so',
-        'libuucore.so',
+        '$exeDir/lib/libdircore.so',
+        '$exeDir/libdircore.so',
+        'libdircore.so',
       ] else ...[
-        'libuucore.so',
+        'libdircore.so',
       ]
     ];
 
     for (final path in candidates) {
       try {
-        return UUCoreBridge._(ffi.DynamicLibrary.open(path));
+        return DirCoreBridge._(ffi.DynamicLibrary.open(path));
       } catch (_) {
         continue;
       }
@@ -137,7 +146,7 @@ class UUCoreBridge {
 
     if (Platform.isIOS) {
       try {
-        return UUCoreBridge._(ffi.DynamicLibrary.process());
+        return DirCoreBridge._(ffi.DynamicLibrary.process());
       } catch (_) {
         return null;
       }
@@ -152,11 +161,11 @@ class UUCoreBridge {
   late final _VoidHandleDart _stop;
   late final _VoidHandleDart _destroy;
   late final _GetTelemetryDart _getTelemetry;
-  late final _CopyFrameDart _copyFrame;
+  late final _CopyFrameDart _copyFrameRgba;
   late final _SendMouseExDart _sendMouseEx;
   late final _SendKeyDart _sendKey;
   late final _SendGamepadDart _sendGamepad;
-  late final _SetQualityDart _setQuality;
+  late final _SetOptionsDart _setOptions;
   late final _SendClipboardDart _sendClipboard;
   late final _SendFileDart _sendFile;
 
@@ -199,7 +208,7 @@ class UUCoreBridge {
 
   TelemetrySnapshot pollTelemetry() {
     if (_handle == ffi.nullptr) return const TelemetrySnapshot();
-    final ptr = calloc<UUTelemetryC>();
+    final ptr = calloc<DirTelemetryC>();
     try {
       _getTelemetry(_handle, ptr);
       final ref = ptr.ref;
@@ -208,6 +217,8 @@ class UUCoreBridge {
         activeProfile: ref.activeProfile,
         activeCodec: ref.activeCodec,
         privacyCurtain: ref.privacyCurtain != 0,
+        monitorCount: ref.monitorCount > 0 ? ref.monitorCount : 1,
+        activeMonitor: ref.activeMonitor,
         connectTimeMs: ref.connectTimeMs,
         rttMs: ref.rttMs,
         lossPct: ref.lossPct,
@@ -227,7 +238,7 @@ class UUCoreBridge {
     }
   }
 
-  ({Uint8List bytes, int width, int height})? copyLatestFrame() {
+  ({Uint8List rgbaBytes, int width, int height})? copyLatestFrameRgba() {
     if (_handle == ffi.nullptr) return null;
     const maxCap = 3840 * 2160 * 4;
     if (_frameBuf == ffi.nullptr || _frameCap < maxCap) {
@@ -238,10 +249,10 @@ class UUCoreBridge {
     final wPtr = calloc<ffi.Uint16>();
     final hPtr = calloc<ffi.Uint16>();
     try {
-      final copied = _copyFrame(_handle, _frameBuf, _frameCap, wPtr, hPtr);
+      final copied = _copyFrameRgba(_handle, _frameBuf, _frameCap, wPtr, hPtr);
       if (copied <= 0) return null;
       return (
-        bytes: Uint8List.fromList(_frameBuf.asTypedList(copied)),
+        rgbaBytes: Uint8List.fromList(_frameBuf.asTypedList(copied)),
         width: wPtr.value,
         height: hPtr.value,
       );
@@ -292,9 +303,19 @@ class UUCoreBridge {
     }
   }
 
-  void setQuality(QualityPreset preset, {required bool privacyCurtain}) {
+  void setOptions({
+    required QualityPreset preset,
+    required bool privacyCurtain,
+    required int monitorIndex,
+  }) {
     if (_handle != ffi.nullptr) {
-      _setQuality(_handle, preset.code, preset.defaultFps, privacyCurtain ? 1 : 0);
+      _setOptions(
+        _handle,
+        preset.code,
+        preset.defaultFps,
+        privacyCurtain ? 1 : 0,
+        monitorIndex.clamp(0, 15),
+      );
     }
   }
 

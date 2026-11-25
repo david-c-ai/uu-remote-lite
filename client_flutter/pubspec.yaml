@@ -1,7 +1,7 @@
-name: uu_remote_lite
-description: Ultra-lightweight, high-speed, low-bandwidth cross-platform remote control client (Windows / macOS / iOS / Android).
+name: dir_remote
+description: DirRemote — Ultra-lightweight, high-speed, low-bandwidth multi-platform remote control client (Windows / macOS / iOS / Android / Linux).
 publish_to: "none"
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

@@ -10,6 +10,8 @@ namespace uu::core {
 struct MonitorInfo {
     uint32_t index = 0;
     uint32_t os_display_id = 0;
+    int32_t origin_x = 0;
+    int32_t origin_y = 0;
     uint16_t width = 1920;
     uint16_t height = 1080;
     uint16_t refresh_hz = 60;
@@ -70,6 +72,8 @@ public:
     virtual ~IScreenCapturer() = default;
     virtual std::vector<MonitorInfo> EnumerateMonitors() = 0;
     virtual bool SelectMonitor(uint32_t monitor_index) = 0;
+    virtual MonitorInfo CurrentMonitor() const = 0;
+    virtual uint8_t MonitorCount() = 0;
     virtual bool CaptureNext(CapturedFrame& out_frame, bool force_keyframe) = 0;
     virtual CursorSnapshot CaptureCursor() = 0;
 };
@@ -91,12 +95,15 @@ public:
 
     std::vector<MonitorInfo> EnumerateMonitors() override;
     bool SelectMonitor(uint32_t monitor_index) override;
+    MonitorInfo CurrentMonitor() const override;
+    uint8_t MonitorCount() override { return 2; }
     bool CaptureNext(CapturedFrame& out_frame, bool force_keyframe) override;
     CursorSnapshot CaptureCursor() override;
 
 private:
     uint16_t width_;
     uint16_t height_;
+    uint32_t active_mon_ = 0;
     uint32_t seq_ = 0;
     uint64_t last_cursor_hash_ = 0;
     SyntheticWorkload workload_ = SyntheticWorkload::kCodeEditorTyping;

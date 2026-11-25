@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'ffi/uucore_bridge.dart';
+import 'package:flutter/services.dart';
+import 'ffi/dircore_bridge.dart';
 import 'models/session_models.dart';
 import 'widgets/file_transfer_sheet.dart';
 import 'widgets/mobile_touch_overlay.dart';
@@ -10,48 +12,55 @@ import 'widgets/remote_canvas.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const UURemoteLiteApp());
+  runApp(const DirRemoteApp());
 }
 
-class UURemoteLiteApp extends StatelessWidget {
-  const UURemoteLiteApp({super.key});
+class DirRemoteApp extends StatelessWidget {
+  const DirRemoteApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'UU Remote Lite',
+      title: 'DirRemote',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(useMaterial3: true).copyWith(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.tealAccent,
+          seedColor: const Color(0xFF38EF7D),
           brightness: Brightness.dark,
         ),
-        scaffoldBackgroundColor: const Color(0xFF0F131A),
+        scaffoldBackgroundColor: const Color(0xFF0B0F17),
       ),
-      home: const RemoteHomeScreen(),
+      home: const DirHomeScreen(),
     );
   }
 }
 
-class RemoteHomeScreen extends StatefulWidget {
-  const RemoteHomeScreen({super.key});
+class DirHomeScreen extends StatefulWidget {
+  const DirHomeScreen({super.key});
 
   @override
-  State<RemoteHomeScreen> createState() => _RemoteHomeScreenState();
+  State<DirHomeScreen> createState() => _DirHomeScreenState();
 }
 
-class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
-  final _serverCtrl = TextEditingController(text: '127.0.0.1');
-  final _selfIdCtrl = TextEditingController(text: '809120455');
+class _DirHomeScreenState extends State<DirHomeScreen> {
+  final _serverCtrl = TextEditingController(text: '172.16.1.29');
+  late final TextEditingController _selfIdCtrl;
   final _targetIdCtrl = TextEditingController(text: '100200300');
   final _pinCtrl = TextEditingController(text: '8866');
 
-  UUCoreBridge? _bridge;
+  DirCoreBridge? _bridge;
   bool _inSession = false;
+  bool _connecting = false;
   bool _hostServiceActive = false;
   bool _privacyCurtain = false;
+  bool _topBarCollapsed = false;
+  int _selectedMonitor = 0;
+
   QualityPreset _preset = QualityPreset.balancedAuto;
   MobileInputMode _mobileMode = MobileInputMode.trackpadRelative;
+  ScreenOrientationMode _orientationMode = ScreenOrientationMode.autoRotate;
+  ViewportScaleMode _scaleMode = ViewportScaleMode.contain;
+
   TelemetrySnapshot _telemetry = const TelemetrySnapshot();
   ui.Image? _frameImage;
   Offset _localCursor = const Offset(0.5, 0.5);
@@ -63,11 +72,16 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   @override
   void initState() {
     super.initState();
-    _bridge = UUCoreBridge.tryLoad();
+    final defaultSelfId = _isDesktop
+        ? '100200300'
+        : '9${(10000000 + math.Random().nextInt(89999999))}';
+    _selfIdCtrl = TextEditingController(text: defaultSelfId);
+    _bridge = DirCoreBridge.tryLoad();
   }
 
   @override
   void dispose() {
+    _restoreSystemOrientation();
     _renderTimer?.cancel();
     _bridge?.dispose();
     _serverCtrl.dispose();
@@ -77,10 +91,50 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     super.dispose();
   }
 
+  Future<void> _applyOrientation(ScreenOrientationMode mode) async {
+    setState(() => _orientationMode = mode);
+    if (_isDesktop) return;
+
+    switch (mode) {
+      case ScreenOrientationMode.landscape:
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        await SystemChrome.setPreferredOrientations([
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+        break;
+      case ScreenOrientationMode.portrait:
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+        await SystemChrome.setPreferredOrientations([
+          DeviceOrientation.portraitUp,
+        ]);
+        break;
+      case ScreenOrientationMode.autoRotate:
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+        break;
+    }
+  }
+
+  Future<void> _cycleOrientation() async {
+    final next = switch (_orientationMode) {
+      ScreenOrientationMode.autoRotate => ScreenOrientationMode.landscape,
+      ScreenOrientationMode.landscape => ScreenOrientationMode.portrait,
+      ScreenOrientationMode.portrait => ScreenOrientationMode.autoRotate,
+    };
+    await _applyOrientation(next);
+  }
+
+  Future<void> _restoreSystemOrientation() async {
+    if (_isDesktop) return;
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+  }
+
   void _toggleHostDaemon(bool enable) {
     final bridge = _bridge;
     if (bridge == null) {
-      setState(() => _bannerMsg = '未检测到原生核心库 libuucore，请先运行 make 构建 core 模块');
+      setState(() => _bannerMsg = '未加载核心引擎 libdircore，请确认动态库在程序目录');
       return;
     }
     if (enable) {
@@ -92,7 +146,7 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       );
       setState(() {
         _hostServiceActive = ok;
-        _bannerMsg = ok ? '被控守护服务已就绪 (零轮询待机 <8MB)' : '启动被控服务失败';
+        _bannerMsg = ok ? 'DirRemote 被控服务已上线 (${_serverCtrl.text.trim()})' : '启动被控服务失败';
       });
     } else {
       bridge.dispose();
@@ -103,12 +157,19 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     }
   }
 
-  void _connectRemote() {
+  Future<void> _connectRemote() async {
     final bridge = _bridge;
     if (bridge == null) {
-      setState(() => _bannerMsg = '未加载 libuucore 动态库，请先执行根目录 make 编译核心库');
+      setState(() => _bannerMsg = '未加载 libdircore 原生引擎');
       return;
     }
+
+    setState(() {
+      _connecting = true;
+      _bannerMsg = '';
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 20));
 
     final started = bridge.startSession(
       selfId: _selfIdCtrl.text.trim(),
@@ -117,44 +178,66 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
       isHost: false,
     );
     if (!started) {
-      setState(() => _bannerMsg = '本地 UDP 传输套接字初始化失败');
+      setState(() {
+        _connecting = false;
+        _bannerMsg = '本地网络端口初始化失败';
+      });
       return;
     }
 
-    final connected = bridge.connectToHost(_targetIdCtrl.text.trim(), timeoutMs: 2000);
+    final connected = bridge.connectToHost(_targetIdCtrl.text.trim(), timeoutMs: 2500);
     if (!connected) {
-      setState(() => _bannerMsg = '连接超时：请确认远端设备在线且验证码一致');
+      setState(() {
+        _connecting = false;
+        _bannerMsg = '连接超时：请确认被控端开关已开启、服务器IP及验证码一致';
+      });
       return;
     }
 
     setState(() {
+      _connecting = false;
       _inSession = true;
+      _selectedMonitor = 0;
       _bannerMsg = '';
     });
+
+    if (!_isDesktop) {
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
     _startFramePump();
   }
 
+  bool _decodingFrame = false;
+
   void _startFramePump() {
     _renderTimer?.cancel();
-    _renderTimer = Timer.periodic(const Duration(milliseconds: 12), (_) {
+    _renderTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
       final bridge = _bridge;
-      if (bridge == null || !_inSession) return;
+      if (bridge == null || !_inSession || _decodingFrame) return;
+
       final tele = bridge.pollTelemetry();
-      final frame = bridge.copyLatestFrame();
+      final frame = bridge.copyLatestFrameRgba();
       if (frame != null && frame.width > 0 && frame.height > 0) {
+        _decodingFrame = true;
         ui.decodeImageFromPixels(
-          frame.bytes,
+          frame.rgbaBytes,
           frame.width,
           frame.height,
-          ui.PixelFormat.bgra8888,
+          ui.PixelFormat.rgba8888,
           (img) {
-            if (!mounted) return;
+            _decodingFrame = false;
+            if (!mounted || !_inSession) {
+              img.dispose();
+              return;
+            }
             setState(() {
               _frameImage?.dispose();
               _frameImage = img;
               _telemetry = tele;
+              _selectedMonitor = tele.activeMonitor;
             });
           },
+          rowBytes: frame.width * 4,
         );
       } else {
         setState(() => _telemetry = tele);
@@ -162,11 +245,23 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
     });
   }
 
-  void _disconnectSession() {
+  void _switchMonitor(int nextMonitor) {
+    setState(() => _selectedMonitor = nextMonitor);
+    _bridge?.setOptions(
+      preset: _preset,
+      privacyCurtain: _privacyCurtain,
+      monitorIndex: nextMonitor,
+    );
+  }
+
+  Future<void> _disconnectSession() async {
     _renderTimer?.cancel();
     _bridge?.dispose();
+    await _restoreSystemOrientation();
+    if (!mounted) return;
     setState(() {
       _inSession = false;
+      _topBarCollapsed = false;
       _frameImage?.dispose();
       _frameImage = null;
     });
@@ -181,249 +276,271 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
   }
 
   Widget _buildConnectDashboard() {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('UU Remote Lite · 极速窄带跨端远控'),
-        backgroundColor: Colors.transparent,
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: Chip(
-              avatar: const Icon(Icons.memory_rounded, size: 16),
-              label: Text(_isDesktop ? 'Desktop (主/被控双模)' : 'Mobile App (控制端)'),
-            ),
-          ),
-        ],
-      ),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: ListView(
-            padding: const EdgeInsets.all(24),
-            children: [
-              if (_bannerMsg.isNotEmpty)
-                Container(
-                  margin: const EdgeInsets.only(bottom: 16),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.teal.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(_bannerMsg),
-                ),
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
-              // Host Unattended Card (Windows / macOS)
-              if (_isDesktop)
-                Card(
-                  color: const Color(0xFF171D28),
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 820),
+            child: ListView(
+              padding: EdgeInsets.symmetric(
+                horizontal: isLandscape ? 28 : 18,
+                vertical: 18,
+              ),
+              children: [
+                // Brand Header Card
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF132A2E), Color(0xFF141B29)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 46,
+                        height: 46,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF38EF7D).withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: const Icon(
+                          Icons.bolt_rounded,
+                          color: Color(0xFF38EF7D),
+                          size: 28,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              '本机被控端凭证 (允许手机 / 其他电脑远控本机)',
-                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                              'DirRemote',
+                              style: TextStyle(
+                                fontSize: 21,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.4,
+                              ),
                             ),
-                            Switch(
-                              value: _hostServiceActive,
-                              onChanged: _toggleHostDaemon,
+                            const SizedBox(height: 3),
+                            Text(
+                              _isDesktop
+                                  ? '桌面主/被控一体端 · 零拷贝窄带引擎 · 多屏自适应'
+                                  : '移动触控远控端 · 支持横竖屏切换 · 多显示器秒切',
+                              style: const TextStyle(color: Colors.white60, fontSize: 12.5),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: _selfIdCtrl,
-                                decoration: const InputDecoration(
-                                  labelText: '本机设备 ID',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
+                      ),
+                      if (!_isDesktop)
+                        IconButton.filledTonal(
+                          tooltip: '切换横竖屏 (${_orientationMode.label})',
+                          onPressed: _cycleOrientation,
+                          icon: const Icon(Icons.screen_rotation_rounded, size: 20),
+                        ),
+                    ],
+                  ),
+                ),
+
+                if (_bannerMsg.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(top: 14),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E3A34),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFF38EF7D).withValues(alpha: 0.35)),
+                    ),
+                    child: Text(_bannerMsg, style: const TextStyle(fontSize: 13)),
+                  ),
+
+                const SizedBox(height: 16),
+
+                // Desktop Host Unattended Card
+                if (_isDesktop) ...[
+                  _sectionCard(
+                    title: '允许远控本机 (被控服务)',
+                    trailing: Switch(
+                      value: _hostServiceActive,
+                      onChanged: _toggleHostDaemon,
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _selfIdCtrl,
+                            decoration: const InputDecoration(
+                              labelText: '本机设备 ID',
+                              prefixIcon: Icon(Icons.tag_rounded, size: 19),
+                              border: OutlineInputBorder(),
+                              isDense: true,
                             ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: TextField(
-                                controller: _pinCtrl,
-                                decoration: const InputDecoration(
-                                  labelText: '连接验证码 (E2EE 派生密钥)',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextField(
+                            controller: _pinCtrl,
+                            decoration: const InputDecoration(
+                              labelText: '连接验证码',
+                              prefixIcon: Icon(Icons.key_rounded, size: 19),
+                              border: OutlineInputBorder(),
+                              isDense: true,
                             ),
-                          ],
+                          ),
                         ),
                       ],
                     ),
                   ),
-                ),
+                  const SizedBox(height: 16),
+                ],
 
-              const SizedBox(height: 16),
-
-              // Remote Control Initiator Card (All 4 Platforms)
-              Card(
-                color: const Color(0xFF171D28),
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
+                // Remote Connect Card
+                _sectionCard(
+                  title: '连接远端电脑',
+                  trailing: Text(
+                    '本机ID: ${_selfIdCtrl.text}',
+                    style: const TextStyle(color: Colors.white38, fontSize: 11.5),
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Text(
-                        '发起极速远控 (Happy-Eyeballs P2P 打洞 + 中继秒连)',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 16),
                       TextField(
                         controller: _serverCtrl,
                         decoration: const InputDecoration(
-                          labelText: '信令/中继服务器地址 (server-lite)',
-                          prefixIcon: Icon(Icons.dns_rounded),
+                          labelText: '信令 / 中继服务器 IP (dir-server)',
+                          prefixIcon: Icon(Icons.dns_rounded, size: 19),
                           border: OutlineInputBorder(),
+                          isDense: true,
                         ),
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(
-                            flex: 2,
+                            flex: 3,
                             child: TextField(
                               controller: _targetIdCtrl,
+                              keyboardType: TextInputType.number,
                               decoration: const InputDecoration(
-                                labelText: '伙伴设备 ID',
-                                prefixIcon: Icon(Icons.desktop_windows_rounded),
+                                labelText: '目标设备 ID',
+                                prefixIcon: Icon(Icons.desktop_mac_rounded, size: 19),
                                 border: OutlineInputBorder(),
+                                isDense: true,
                               ),
                             ),
                           ),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 10),
                           Expanded(
+                            flex: 2,
                             child: TextField(
                               controller: _pinCtrl,
+                              keyboardType: TextInputType.visiblePassword,
                               decoration: const InputDecoration(
                                 labelText: '验证码',
-                                prefixIcon: Icon(Icons.lock_outline_rounded),
+                                prefixIcon: Icon(Icons.lock_outline_rounded, size: 19),
                                 border: OutlineInputBorder(),
+                                isDense: true,
                               ),
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 18),
+                      const SizedBox(height: 16),
                       FilledButton.icon(
                         style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          backgroundColor: const Color(0xFF2BD973),
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
                         ),
-                        onPressed: _connectRemote,
-                        icon: const Icon(Icons.flash_on_rounded),
-                        label: const Text('立即秒连远端桌面', style: TextStyle(fontSize: 15)),
+                        onPressed: _connecting ? null : _connectRemote,
+                        icon: _connecting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
+                              )
+                            : const Icon(Icons.flash_on_rounded),
+                        label: Text(
+                          _connecting ? '正在握手打洞...' : '立即极速连接',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                        ),
                       ),
                     ],
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildActiveSessionView() {
-    return Scaffold(
-      appBar: PreferredSize(
-        preferredSize: const Size.fromHeight(46),
-        child: AppBar(
-          backgroundColor: const Color(0xFF141923),
-          titleSpacing: 12,
-          title: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                // Bandwidth & Quality Switcher
-                DropdownButtonHideUnderline(
-                  child: DropdownButton<QualityPreset>(
-                    value: _preset,
-                    dropdownColor: const Color(0xFF1C2331),
-                    items: QualityPreset.values
-                        .map((p) => DropdownMenuItem(
-                              value: p,
-                              child: Text(p.label, style: const TextStyle(fontSize: 13)),
-                            ))
-                        .toList(),
-                    onChanged: (val) {
-                      if (val == null) return;
-                      setState(() => _preset = val);
-                      _bridge?.setQuality(val, privacyCurtain: _privacyCurtain);
-                    },
-                  ),
-                ),
-                const SizedBox(width: 12),
-
-                // Mobile Input Mode Selector
-                SegmentedButton<MobileInputMode>(
-                  segments: MobileInputMode.values
-                      .map((m) => ButtonSegment(
-                            value: m,
-                            label: Text(m.label, style: const TextStyle(fontSize: 11)),
-                          ))
-                      .toList(),
-                  selected: {_mobileMode},
-                  onSelectionChanged: (s) => setState(() => _mobileMode = s.first),
-                ),
-                const SizedBox(width: 12),
-
-                // Privacy Curtain Switch
-                FilterChip(
-                  selected: _privacyCurtain,
-                  label: const Text('隐私屏防窥', style: TextStyle(fontSize: 12)),
-                  onSelected: (v) {
-                    setState(() => _privacyCurtain = v);
-                    _bridge?.setQuality(_preset, privacyCurtain: v);
-                  },
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            IconButton(
-              tooltip: '文件互传与剪贴板',
-              icon: const Icon(Icons.folder_copy_rounded),
-              onPressed: () {
-                showModalBottomSheet(
-                  context: context,
-                  backgroundColor: const Color(0xFF171D28),
-                  builder: (_) => FileTransferSheet(
-                    onSendFilePath: (p) => _bridge?.sendFile(p) ?? false,
-                    onSyncClipboardText: (t) => _bridge?.sendClipboard(t),
-                  ),
-                );
-              },
-            ),
-            IconButton(
-              tooltip: '断开连接',
-              icon: const Icon(Icons.call_end_rounded, color: Colors.redAccent),
-              onPressed: _disconnectSession,
-            ),
-          ],
-        ),
+  Widget _sectionCard({
+    required String title,
+    Widget? trailing,
+    required Widget child,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141A26),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white10),
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700),
+              ),
+              if (trailing != null) trailing,
+            ],
+          ),
+          const SizedBox(height: 14),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActiveSessionView() {
+    final monCount = math.max(1, _telemetry.monitorCount);
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0D12),
       body: Stack(
         fit: StackFit.expand,
         children: [
+          // 1. Remote Desktop Canvas + Decoupled Cursor + Pinch Zoom
           RemoteCanvas(
             frameImage: _frameImage,
             telemetry: _telemetry,
             localCursorNorm: _localCursor,
+            scaleMode: _scaleMode,
+            enablePinchZoom: _mobileMode == MobileInputMode.directTouchZoom,
             onPointerEventNorm: (xn, yn, btnMask, wheelY) {
               setState(() => _localCursor = Offset(xn / 65535.0, yn / 65535.0));
               _bridge?.sendMouse(xn, yn, buttonMask: btnMask, wheelY: wheelY);
             },
           ),
+
+          // 2. Mobile Gesture & Collapsible Quick-Action Overlay
           MobileTouchOverlay(
             mode: _mobileMode,
             onRelativeTrackpadDelta: (dx, dy) {
@@ -447,6 +564,11 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
                 _bridge?.sendMouse(xn, yn, buttonMask: 0);
               });
             },
+            onTrackpadScroll: (wheelDelta) {
+              final xn = (_localCursor.dx * 65535).round();
+              final yn = (_localCursor.dy * 65535).round();
+              _bridge?.sendMouse(xn, yn, wheelY: wheelDelta);
+            },
             onDirectTouchTapNorm: (xn, yn) {
               setState(() => _localCursor = Offset(xn / 65535.0, yn / 65535.0));
               _bridge?.sendMouse(xn, yn, buttonMask: 0x01);
@@ -464,7 +586,207 @@ class _RemoteHomeScreenState extends State<RemoteHomeScreen> {
               _bridge?.sendGamepad(buttons: buttons, lx: lx, ly: ly, rx: rx, ry: ry);
             },
           ),
+
+          // 3. Top-Right Collapsible Floating Session Toolbar (Supports Portrait & Landscape + Multi-Monitor!)
+          Positioned(
+            top: 8,
+            right: 12,
+            left: 12,
+            child: SafeArea(
+              bottom: false,
+              child: Align(
+                alignment: Alignment.topRight,
+                child: _topBarCollapsed
+                    ? IconButton.filledTonal(
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xCC151C28),
+                        ),
+                        tooltip: '展开控制栏',
+                        icon: const Icon(Icons.tune_rounded, size: 18),
+                        onPressed: () => setState(() => _topBarCollapsed = false),
+                      )
+                    : SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xE0131924),
+                            borderRadius: BorderRadius.circular(22),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Multi-Monitor Switcher (Cycles displays when host has multiple screens, or lets user pick)
+                              PopupMenuButton<int>(
+                                tooltip: '切换被控端显示器',
+                                color: const Color(0xFF1A2232),
+                                onSelected: _switchMonitor,
+                                itemBuilder: (_) {
+                                  final count = math.max(monCount, 2);
+                                  return List.generate(
+                                    count,
+                                    (idx) => PopupMenuItem<int>(
+                                      value: idx,
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            Icons.monitor_rounded,
+                                            size: 16,
+                                            color: idx == _selectedMonitor
+                                                ? const Color(0xFF38EF7D)
+                                                : Colors.white54,
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Text('显示器 ${idx + 1}${idx >= monCount ? " (扩展)" : ""}'),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.monitor_rounded, size: 15, color: Color(0xFF38EF7D)),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        '屏幕 ${_selectedMonitor + 1}/$monCount',
+                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+
+                              // Orientation Toggle (Portrait / Landscape / Auto) on Mobile
+                              if (!_isDesktop)
+                                _barBtn(
+                                  icon: Icons.screen_rotation_rounded,
+                                  label: _orientationMode == ScreenOrientationMode.landscape
+                                      ? '竖屏'
+                                      : (_orientationMode == ScreenOrientationMode.portrait ? '自动' : '横屏'),
+                                  onTap: _cycleOrientation,
+                                ),
+
+                              // Aspect Ratio Fit Toggle (Contain vs Fill)
+                              _barBtn(
+                                icon: Icons.aspect_ratio_rounded,
+                                label: _scaleMode.label,
+                                onTap: () {
+                                  setState(() {
+                                    _scaleMode = _scaleMode == ViewportScaleMode.contain
+                                        ? ViewportScaleMode.fill
+                                        : ViewportScaleMode.contain;
+                                  });
+                                },
+                              ),
+
+                              // Input Mode Cycle (Trackpad / Direct Zoom / Gamepad)
+                              _barBtn(
+                                icon: Icons.mouse_rounded,
+                                label: _mobileMode.label,
+                                onTap: () {
+                                  final next = switch (_mobileMode) {
+                                    MobileInputMode.trackpadRelative => MobileInputMode.directTouchZoom,
+                                    MobileInputMode.directTouchZoom => MobileInputMode.virtualGamepad,
+                                    MobileInputMode.virtualGamepad => MobileInputMode.trackpadRelative,
+                                  };
+                                  setState(() => _mobileMode = next);
+                                },
+                              ),
+
+                              // Bandwidth / Quality Mode Menu
+                              PopupMenuButton<QualityPreset>(
+                                tooltip: '画质与带宽模式',
+                                color: const Color(0xFF1A2232),
+                                onSelected: (val) {
+                                  setState(() => _preset = val);
+                                  _bridge?.setOptions(
+                                    preset: val,
+                                    privacyCurtain: _privacyCurtain,
+                                    monitorIndex: _selectedMonitor,
+                                  );
+                                },
+                                itemBuilder: (_) => QualityPreset.values
+                                    .map((p) => PopupMenuItem(
+                                          value: p,
+                                          child: Text('${p.shortLabel} (${p.subtitle})'),
+                                        ))
+                                    .toList(),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                                  child: Text(
+                                    _preset.shortLabel,
+                                    style: const TextStyle(fontSize: 12, color: Colors.tealAccent),
+                                  ),
+                                ),
+                              ),
+
+                              // File & Clipboard Sheet
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                tooltip: '文件传输与剪贴板',
+                                icon: const Icon(Icons.folder_copy_rounded, size: 17),
+                                onPressed: () {
+                                  showModalBottomSheet(
+                                    context: context,
+                                    backgroundColor: const Color(0xFF141A26),
+                                    builder: (_) => FileTransferSheet(
+                                      onSendFilePath: (p) => _bridge?.sendFile(p) ?? false,
+                                      onSyncClipboardText: (t) => _bridge?.sendClipboard(t),
+                                    ),
+                                  );
+                                },
+                              ),
+
+                              // Collapse Toolbar Button
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                tooltip: '收起顶栏',
+                                icon: const Icon(Icons.chevron_right_rounded, size: 19, color: Colors.white54),
+                                onPressed: () => setState(() => _topBarCollapsed = true),
+                              ),
+
+                              // Disconnect Button
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                tooltip: '断开远控',
+                                icon: const Icon(Icons.power_settings_new_rounded,
+                                    size: 18, color: Colors.redAccent),
+                                onPressed: _disconnectSession,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+              ),
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _barBtn({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: Colors.white70),
+            const SizedBox(width: 4),
+            Text(label, style: const TextStyle(fontSize: 11.5, color: Colors.white)),
+          ],
+        ),
       ),
     );
   }

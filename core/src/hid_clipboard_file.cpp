@@ -28,7 +28,9 @@ namespace uu::core {
 InputDispatcher::InputDispatcher(bool enable_os_injection)
     : enable_os_injection_(enable_os_injection) {}
 
-void InputDispatcher::SetDisplayBounds(uint16_t width, uint16_t height) {
+void InputDispatcher::SetDisplayBounds(uint16_t width, uint16_t height, int32_t origin_x, int32_t origin_y) {
+    origin_x_ = origin_x;
+    origin_y_ = origin_y;
     display_w_ = std::max<uint16_t>(1, width);
     display_h_ = std::max<uint16_t>(1, height);
 }
@@ -40,12 +42,8 @@ void InputDispatcher::ApplyMouse(const PayloadMouseEvent& ev) {
     if (!enable_os_injection_) return;
 
 #if defined(__APPLE__) && TARGET_OS_OSX
-    size_t logical_w = CGDisplayPixelsWide(CGMainDisplayID());
-    size_t logical_h = CGDisplayPixelsHigh(CGMainDisplayID());
-    double target_w = logical_w > 0 ? static_cast<double>(logical_w) : static_cast<double>(display_w_);
-    double target_h = logical_h > 0 ? static_cast<double>(logical_h) : static_cast<double>(display_h_);
-    double px = (static_cast<double>(ev.x_norm) / 65535.0) * target_w;
-    double py = (static_cast<double>(ev.y_norm) / 65535.0) * target_h;
+    double px = static_cast<double>(origin_x_) + (static_cast<double>(ev.x_norm) / 65535.0) * display_w_;
+    double py = static_cast<double>(origin_y_) + (static_cast<double>(ev.y_norm) / 65535.0) * display_h_;
     CGPoint pt = CGPointMake(px, py);
 
     auto post_btn = [&](CGEventType type, CGMouseButton btn) {
@@ -88,9 +86,15 @@ void InputDispatcher::ApplyMouse(const PayloadMouseEvent& ev) {
         inp.mi.dy = ev.dy;
         inp.mi.dwFlags = MOUSEEVENTF_MOVE;
     } else {
-        inp.mi.dx = ev.x_norm;
-        inp.mi.dy = ev.y_norm;
-        inp.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
+        int vh = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        double global_x = origin_x_ + (static_cast<double>(ev.x_norm) / 65535.0) * display_w_;
+        double global_y = origin_y_ + (static_cast<double>(ev.y_norm) / 65535.0) * display_h_;
+        inp.mi.dx = static_cast<LONG>(((global_x - vx) * 65535.0) / vw);
+        inp.mi.dy = static_cast<LONG>(((global_y - vy) * 65535.0) / vh);
+        inp.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
     }
     if (changed & 0x01) {
         inp.mi.dwFlags |= (ev.button_mask & 0x01) ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;

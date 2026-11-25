@@ -6,7 +6,7 @@ ifeq ($(UNAME_S),Darwin)
     APPLE_LDFLAGS := -framework Foundation -framework CoreFoundation -framework CoreGraphics -framework CoreVideo -framework CoreMedia -framework VideoToolbox -framework ApplicationServices -framework ScreenCaptureKit -lcompression
     OBJCXX_FLAGS := -ObjC++ -fobjc-arc
     SHARED_EXT := dylib
-    SHARED_FLAGS := -dynamiclib -install_name @rpath/libuucore.dylib
+    SHARED_FLAGS := -dynamiclib -install_name @rpath/libdircore.dylib
 else
     APPLE_LDFLAGS := -lpthread
     OBJCXX_FLAGS :=
@@ -24,28 +24,28 @@ CORE_SRCS := \
     core/src/codec_hal.cpp \
     core/src/hid_clipboard_file.cpp \
     core/src/session_engine.cpp \
-    core/src/uucore_ffi.cpp
+    core/src/dircore_ffi.cpp
 
-.PHONY: all clean test strip
+.PHONY: all clean test
 
-all: $(BUILD_DIR)/uu-server-lite $(BUILD_DIR)/libuucore.$(SHARED_EXT) $(BUILD_DIR)/uu-e2e-bench
+all: $(BUILD_DIR)/dir-server $(BUILD_DIR)/libdircore.$(SHARED_EXT) $(BUILD_DIR)/dir-e2e-bench
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/uu-server-lite: server-lite/src/server_runtime.cpp server-lite/src/main.cpp | $(BUILD_DIR)
+$(BUILD_DIR)/dir-server: server-lite/src/server_runtime.cpp server-lite/src/main.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $^ -o $@
 	strip -x $@
 
-$(BUILD_DIR)/libuucore.$(SHARED_EXT): $(CORE_SRCS) | $(BUILD_DIR)
+$(BUILD_DIR)/libdircore.$(SHARED_EXT): $(CORE_SRCS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(OBJCXX_FLAGS) -fPIC $(SHARED_FLAGS) $^ $(APPLE_LDFLAGS) -o $@
 	strip -x $@
 
-$(BUILD_DIR)/uu-e2e-bench: core/tools/uu_e2e_bench.cpp $(BUILD_DIR)/libuucore.$(SHARED_EXT) | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -Wl,-rpath,@executable_path core/tools/uu_e2e_bench.cpp -L$(BUILD_DIR) -luucore $(APPLE_LDFLAGS) -o $@
+$(BUILD_DIR)/dir-e2e-bench: core/tools/uu_e2e_bench.cpp $(BUILD_DIR)/libdircore.$(SHARED_EXT) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -Wl,-rpath,@executable_path core/tools/uu_e2e_bench.cpp -L$(BUILD_DIR) -ldircore $(APPLE_LDFLAGS) -o $@
 
 test: all
-	./$(BUILD_DIR)/uu-e2e-bench
+	./$(BUILD_DIR)/dir-e2e-bench
 
 clean:
 	rm -rf $(BUILD_DIR)

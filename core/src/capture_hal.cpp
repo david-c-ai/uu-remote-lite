@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #if defined(__APPLE__)
@@ -119,33 +120,37 @@ void DirtyRectTracker::Analyze(CapturedFrame& frame, bool force_full_frame) {
 
 SyntheticCapturer::SyntheticCapturer(uint16_t width, uint16_t height)
     : width_(width), height_(height), canvas_(static_cast<size_t>(width) * height * 4, 0) {
-    // Initialize crisp dark IDE-style desktop background
+    // Initialize clean slate card when OS screen recording permission is pending
     for (uint16_t y = 0; y < height_; ++y) {
         for (uint16_t x = 0; x < width_; ++x) {
             size_t idx = (static_cast<size_t>(y) * width_ + x) * 4;
-            canvas_[idx + 0] = 36; // B
-            canvas_[idx + 1] = 30; // G
-            canvas_[idx + 2] = 26; // R
+            bool in_card = (x > width_ / 4 && x < (width_ * 3) / 4 &&
+                            y > height_ / 4 && y < (height_ * 3) / 4);
+            canvas_[idx + 0] = in_card ? 56 : 28; // B
+            canvas_[idx + 1] = in_card ? 44 : 22; // G
+            canvas_[idx + 2] = in_card ? 32 : 18; // R
             canvas_[idx + 3] = 255;
-            if ((x % 64 == 0) || (y == 32)) {
-                canvas_[idx + 0] = 58;
-                canvas_[idx + 1] = 52;
-                canvas_[idx + 2] = 48;
-            }
         }
     }
 }
 
 std::vector<MonitorInfo> SyntheticCapturer::EnumerateMonitors() {
     return {
-        {0, 1, width_, height_, 144, true, "Primary Virtual Display"},
-        {1, 2, 1920, 1080, 60, false, "Secondary Studio Display"}
+        {0, 1, 0, 0, width_, height_, 144, true, "Primary Virtual Display"},
+        {1, 2, width_, 0, 1920, 1080, 60, false, "Secondary Studio Display"}
     };
 }
 
-bool SyntheticCapturer::SelectMonitor(uint32_t) {
+bool SyntheticCapturer::SelectMonitor(uint32_t monitor_index) {
+    if (monitor_index >= 2) return false;
+    active_mon_ = monitor_index;
     dirty_tracker_.Reset();
     return true;
+}
+
+MonitorInfo SyntheticCapturer::CurrentMonitor() const {
+    return {active_mon_, active_mon_ + 1, static_cast<int32_t>(active_mon_ * width_), 0,
+            width_, height_, 144, active_mon_ == 0, "Virtual Display"};
 }
 
 bool SyntheticCapturer::CaptureNext(CapturedFrame& out_frame, bool force_keyframe) {
@@ -229,7 +234,9 @@ class MacNativeCapturer : public IScreenCapturer {
 public:
     MacNativeCapturer() {
         auto mons = EnumerateMonitors();
+        mon_count_ = mons.empty() ? 1 : static_cast<uint8_t>(mons.size());
         if (!mons.empty()) {
+            cur_mon_ = mons[0];
             active_display_ = mons[0].os_display_id;
             active_w_ = mons[0].width;
             active_h_ = mons[0].height;
@@ -247,8 +254,11 @@ public:
                 MonitorInfo m{};
                 m.index = i;
                 m.os_display_id = ids[i];
-                m.width = static_cast<uint16_t>(CGDisplayPixelsWide(ids[i]));
-                m.height = static_cast<uint16_t>(CGDisplayPixelsHigh(ids[i]));
+                CGRect bounds = CGDisplayBounds(ids[i]);
+                m.origin_x = static_cast<int32_t>(bounds.origin.x);
+                m.origin_y = static_cast<int32_t>(bounds.origin.y);
+                m.width = static_cast<uint16_t>(bounds.size.width > 0 ? bounds.size.width : CGDisplayPixelsWide(ids[i]));
+                m.height = static_cast<uint16_t>(bounds.size.height > 0 ? bounds.size.height : CGDisplayPixelsHigh(ids[i]));
                 m.is_primary = CGDisplayIsMain(ids[i]) != 0;
                 CGDisplayModeRef mode = CGDisplayCopyDisplayMode(ids[i]);
                 if (mode) {
@@ -260,12 +270,14 @@ public:
                 list.push_back(m);
             }
         }
+        mon_count_ = list.empty() ? 1 : static_cast<uint8_t>(list.size());
         return list;
     }
 
     bool SelectMonitor(uint32_t monitor_index) override {
         auto mons = EnumerateMonitors();
         if (monitor_index >= mons.size()) return false;
+        cur_mon_ = mons[monitor_index];
         active_display_ = mons[monitor_index].os_display_id;
         active_w_ = mons[monitor_index].width;
         active_h_ = mons[monitor_index].height;
@@ -277,10 +289,19 @@ public:
         return true;
     }
 
+    MonitorInfo CurrentMonitor() const override { return cur_mon_; }
+    uint8_t MonitorCount() override { return mon_count_; }
+
     bool CaptureNext(CapturedFrame& out_frame, bool force_keyframe) override {
         CGImageRef img = nullptr;
 #if defined(__OBJC__)
         if (@available(macOS 14.0, *)) {
+            if (!CGPreflightScreenCaptureAccess() && !prompted_permission_) {
+                prompted_permission_ = true;
+                if (!std::getenv("CI")) {
+                    CGRequestScreenCaptureAccess();
+                }
+            }
             if (CGPreflightScreenCaptureAccess()) {
                 if (!cached_filter_ || !cached_cfg_) {
                     dispatch_semaphore_t init_sem = dispatch_semaphore_create(0);
@@ -371,8 +392,8 @@ public:
             CFRelease(ev);
             uint16_t w = std::max<uint16_t>(1, active_w_);
             uint16_t h = std::max<uint16_t>(1, active_h_);
-            double nx = std::clamp(pt.x / static_cast<double>(w), 0.0, 1.0);
-            double ny = std::clamp(pt.y / static_cast<double>(h), 0.0, 1.0);
+            double nx = std::clamp((pt.x - cur_mon_.origin_x) / static_cast<double>(w), 0.0, 1.0);
+            double ny = std::clamp((pt.y - cur_mon_.origin_y) / static_cast<double>(h), 0.0, 1.0);
             cur.x_norm = static_cast<uint16_t>(nx * 65535.0);
             cur.y_norm = static_cast<uint16_t>(ny * 65535.0);
         }
@@ -380,6 +401,8 @@ public:
     }
 
 private:
+    MonitorInfo cur_mon_{};
+    uint8_t mon_count_ = 1;
     CGDirectDisplayID active_display_ = 0;
     uint16_t active_w_ = 1920;
     uint16_t active_h_ = 1080;
@@ -387,6 +410,7 @@ private:
 #if defined(__OBJC__)
     SCContentFilter* cached_filter_ = nil;
     SCStreamConfiguration* cached_cfg_ = nil;
+    bool prompted_permission_ = false;
 #endif
     DirtyRectTracker dirty_tracker_;
     SyntheticCapturer fallback_{1280, 720};
@@ -398,7 +422,17 @@ class WinNativeCapturer : public IScreenCapturer {
 public:
     WinNativeCapturer() {
         SetProcessDPIAware();
-        RefreshMetrics();
+        auto mons = EnumerateMonitors();
+        mon_count_ = mons.empty() ? 1 : static_cast<uint8_t>(mons.size());
+        if (!mons.empty()) {
+            cur_mon_ = mons[0];
+            origin_x_ = mons[0].origin_x;
+            origin_y_ = mons[0].origin_y;
+            active_w_ = mons[0].width;
+            active_h_ = mons[0].height;
+        } else {
+            RefreshMetrics();
+        }
     }
 
     ~WinNativeCapturer() override {
@@ -417,6 +451,8 @@ public:
                     MonitorInfo info{};
                     info.index = static_cast<uint32_t>(out->size());
                     info.os_display_id = info.index + 1;
+                    info.origin_x = mi.rcMonitor.left;
+                    info.origin_y = mi.rcMonitor.top;
                     info.width = static_cast<uint16_t>(mi.rcMonitor.right - mi.rcMonitor.left);
                     info.height = static_cast<uint16_t>(mi.rcMonitor.bottom - mi.rcMonitor.top);
                     info.is_primary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
@@ -441,35 +477,27 @@ public:
             m.name = "Windows Primary Display";
             mons.push_back(m);
         }
+        mon_count_ = static_cast<uint8_t>(mons.size());
         return mons;
     }
 
     bool SelectMonitor(uint32_t monitor_index) override {
-        std::vector<RECT> rects;
-        EnumDisplayMonitors(
-            nullptr, nullptr,
-            [](HMONITOR hmon, HDC, LPRECT, LPARAM lparam) -> BOOL {
-                auto* vec = reinterpret_cast<std::vector<RECT>*>(lparam);
-                MONITORINFO mi{};
-                mi.cbSize = sizeof(mi);
-                if (GetMonitorInfo(hmon, &mi)) {
-                    vec->push_back(mi.rcMonitor);
-                }
-                return TRUE;
-            },
-            reinterpret_cast<LPARAM>(&rects));
-
-        if (monitor_index < rects.size()) {
-            origin_x_ = rects[monitor_index].left;
-            origin_y_ = rects[monitor_index].top;
-            active_w_ = static_cast<uint16_t>(rects[monitor_index].right - rects[monitor_index].left);
-            active_h_ = static_cast<uint16_t>(rects[monitor_index].bottom - rects[monitor_index].top);
+        auto mons = EnumerateMonitors();
+        if (monitor_index < mons.size()) {
+            cur_mon_ = mons[monitor_index];
+            origin_x_ = cur_mon_.origin_x;
+            origin_y_ = cur_mon_.origin_y;
+            active_w_ = cur_mon_.width;
+            active_h_ = cur_mon_.height;
             ReleaseDib();
             dirty_tracker_.Reset();
             return true;
         }
         return false;
     }
+
+    MonitorInfo CurrentMonitor() const override { return cur_mon_; }
+    uint8_t MonitorCount() override { return mon_count_; }
 
     bool CaptureNext(CapturedFrame& out_frame, bool force_keyframe) override {
         if (active_w_ == 0 || active_h_ == 0) RefreshMetrics();
@@ -557,6 +585,8 @@ private:
         dib_h_ = 0;
     }
 
+    MonitorInfo cur_mon_{};
+    uint8_t mon_count_ = 1;
     int origin_x_ = 0;
     int origin_y_ = 0;
     uint16_t active_w_ = 0;

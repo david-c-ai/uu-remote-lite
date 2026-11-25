@@ -47,6 +47,8 @@ struct SessionTelemetry {
     uint16_t remote_height = 0;
     uint16_t cursor_x_norm = 32768;
     uint16_t cursor_y_norm = 32768;
+    uint8_t monitor_count = 1;
+    uint8_t active_monitor = 0;
     bool privacy_curtain_on = false;
 };
 
@@ -85,7 +87,8 @@ public:
                             uint8_t button_mask = 0, int16_t wheel_y = 0);
     void SendKey(uint16_t keycode, bool is_down, uint8_t modifiers = 0);
     void SendGamepad(const PayloadGamepad& pad);
-    void SetQualityProfile(QualityProfile profile, uint8_t target_fps = 60, bool privacy_curtain = false);
+    void SetQualityProfile(QualityProfile profile, uint8_t target_fps = 60,
+                           bool privacy_curtain = false, uint8_t monitor_index = 0);
     void SendClipboardText(const std::string& utf8_text);
     bool SendFile(const std::string& local_file_path, uint64_t file_id = 1);
 

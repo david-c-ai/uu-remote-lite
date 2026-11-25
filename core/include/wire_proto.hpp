@@ -95,6 +95,8 @@ struct PayloadVideoShardHeader {
     uint16_t height;
     VideoCodecId codec;
     uint8_t is_keyframe;     // 1 = full frame / IDR, 0 = delta / P-frame
+    uint8_t monitor_count;   // Total displays on host (1..16)
+    uint8_t active_monitor;  // Currently captured display index (0..monitor_count-1)
     uint16_t dirty_rect_cnt; // Number of changed 64x64 tiles
     uint32_t total_frame_bytes;
     uint16_t shard_bytes;
