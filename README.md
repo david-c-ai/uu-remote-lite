@@ -38,16 +38,22 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 cmake --build . --config Release
 ```
 
-### 3. 启动私有打洞与中继服务端
+### 3. Linux 云服务器一键启动信令与中继服务
+直接从 GitHub Releases 一键下载并后台启动（零外部依赖静态二进制，兼容 Ubuntu / Debian / CentOS / Rocky 等全系 Linux）：
 ```bash
-./build/uu-server-lite -p 21116 -r 21117
+curl -sL https://github.com/david-c-ai/uu-remote-lite/releases/latest/download/UURemoteLite-Server-Linux-x64.tar.gz | tar -xz
+cd uu-server-linux
+./start.sh                 # 一键后台启动并自动打印服务器公网 IP
+# 或安装为开机自启守护服务:
+sudo ./install-systemd.sh
 ```
+*(请在云服务器控制台安全组放行 **UDP `21116` 与 `21117`** 端口。)*
 
-### 4. 运行四端 Flutter 客户端
-安装 Flutter SDK 后，在 `client_flutter/` 目录生成各平台宿主壳并捆绑编译好的 `libuucore.dylib` / `uucore.dll` / `libuucore.so`：
-```bash
-cd client_flutter
-flutter create . --platforms=macos,windows,ios,android
-flutter pub get
-flutter run -d macos   # 或 windows / ios / android
-```
+### 4. 全平台客户端安装包说明（GitHub Actions 自动产出）
+每次推送代码或发布 `v*` 标签会自动构建全部 6 个平台产物：
+* **`UURemoteLite-Server-Linux-x64.tar.gz`**：Linux 静态单文件服务端 + `start.sh` / `stop.sh` / `status.sh` / `install-systemd.sh`。
+* **`UURemoteLite-macOS.dmg`**：macOS 主/被控客户端（首次打开前执行 `xattr -cr /Applications/UURemoteLite.app`）。
+* **`UURemoteLite-Windows-x64.zip`**：Windows 便携免安装主/被控客户端 + `start-server.bat`。
+* **`UURemoteLite-Android.apk`**：Android 手机/平板控制端。
+* **`UURemoteLite-iOS-Unsigned.ipa`**：iPhone / iPad 控制端（内置 `VideoToolbox` H.265 硬解框架 `uucore.framework`，可通过 **Sideloadly / AltStore / 爱思助手** 用个人免费 Apple ID 自签安装）。
+* **`UURemoteLite-Client-Linux-x64.tar.gz`**：Linux 桌面控制端。

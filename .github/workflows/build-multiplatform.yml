@@ -1,4 +1,4 @@
-name: Build Multi-Platform Packages (macOS / Windows / Android)
+name: Build All Platforms (Server-Linux / macOS / iOS / Windows / Android / Linux)
 
 on:
   push:
@@ -11,7 +11,42 @@ permissions:
 
 jobs:
   # ============================================================================
-  # 1. macOS (.dmg + uu-server-lite-macos)
+  # 1. Linux One-Click Standalone Server (Static x86_64 + start/stop/systemd)
+  # ============================================================================
+  build-server-linux:
+    name: Package Linux One-Click Server (.tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build zero-dependency static Linux server & bundle scripts
+        run: |
+          mkdir -p uu-server-linux
+          g++ -std=c++20 -O3 -static -pthread -Iserver-lite/include \
+            server-lite/src/server_runtime.cpp server-lite/src/main.cpp \
+            -o uu-server-linux/uu-server-lite || \
+          g++ -std=c++20 -O3 -static-libgcc -static-libstdc++ -pthread -Iserver-lite/include \
+            server-lite/src/server_runtime.cpp server-lite/src/main.cpp \
+            -o uu-server-linux/uu-server-lite
+          strip -s uu-server-linux/uu-server-lite
+
+          cp server-lite/scripts/start.sh uu-server-linux/
+          cp server-lite/scripts/stop.sh uu-server-linux/
+          cp server-lite/scripts/status.sh uu-server-linux/
+          cp server-lite/scripts/install-systemd.sh uu-server-linux/
+          chmod +x uu-server-linux/*.sh uu-server-linux/uu-server-lite
+
+          tar -czf UURemoteLite-Server-Linux-x64.tar.gz uu-server-linux
+
+      - name: Upload Linux One-Click Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UURemoteLite-Server-Linux-x64
+          path: UURemoteLite-Server-Linux-x64.tar.gz
+
+  # ============================================================================
+  # 2. macOS Client + Host (.dmg)
   # ============================================================================
   build-macos:
     name: Package macOS (.dmg)
@@ -37,7 +72,6 @@ jobs:
           rm -rf lib && mv /tmp/uu_lib_backup lib
           mv /tmp/uu_pubspec_backup.yaml pubspec.yaml
 
-          # Disable macOS App Sandbox so UDP Hole-Punching, ScreenCaptureKit & CGEvent work on real Macs
           cat > macos/Runner/Release.entitlements << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -60,7 +94,6 @@ jobs:
       - name: Bundle libuucore.dylib & package DMG
         run: |
           APP_PATH=$(ls -d client_flutter/build/macos/Build/Products/Release/*.app | head -n 1)
-          echo "Packaging macOS app bundle: $APP_PATH"
           mkdir -p "$APP_PATH/Contents/Frameworks"
           cp build/libuucore.dylib "$APP_PATH/Contents/Frameworks/libuucore.dylib"
           codesign --force --deep -s - "$APP_PATH"
@@ -74,12 +107,96 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: UURemoteLite-macOS
-          path: |
-            UURemoteLite-macOS.dmg
-            build/uu-server-lite
+          path: UURemoteLite-macOS.dmg
 
   # ============================================================================
-  # 2. Windows x64 (.zip portable with .exe + uucore.dll + uu-server-lite.exe)
+  # 3. iOS / iPadOS Controller App (.ipa Unsigned — for Sideloadly / AltStore / Xcode)
+  # ============================================================================
+  build-ios:
+    name: Package iOS / iPadOS (.ipa)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build native arm64 iOS uucore.framework (with VideoToolbox HEVC)
+        run: |
+          IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p build-ios/uucore.framework
+
+          xcrun --sdk iphoneos clang++ -std=c++20 -O3 -flto -ObjC++ -fobjc-arc -fPIC \
+            -arch arm64 -isysroot "$IOS_SDK" -miphoneos-version-min=15.0 \
+            -dynamiclib -install_name @rpath/uucore.framework/uucore \
+            -Icore/include -Iserver-lite/include \
+            server-lite/src/server_runtime.cpp \
+            core/src/crypto_e2ee.cpp \
+            core/src/fec_qos.cpp \
+            core/src/capture_hal.cpp \
+            core/src/codec_hal.cpp \
+            core/src/hid_clipboard_file.cpp \
+            core/src/session_engine.cpp \
+            core/src/uucore_ffi.cpp \
+            -framework Foundation -framework CoreFoundation -framework CoreGraphics \
+            -framework CoreVideo -framework CoreMedia -framework VideoToolbox -lcompression \
+            -o build-ios/uucore.framework/uucore
+          strip -x build-ios/uucore.framework/uucore
+
+          cat > build-ios/uucore.framework/Info.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>uucore</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.uuremotelite.uucore</string>
+            <key>CFBundleName</key>
+            <string>uucore</string>
+            <key>CFBundlePackageType</key>
+            <string>FMWK</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>MinimumOSVersion</key>
+            <string>15.0</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Scaffold & build Flutter iOS App (no-codesign)
+        working-directory: client_flutter
+        run: |
+          cp -R lib /tmp/uu_ios_lib
+          cp pubspec.yaml /tmp/uu_ios_pubspec.yaml
+          flutter create . --project-name uu_remote_lite --platforms=ios
+          rm -rf lib && mv /tmp/uu_ios_lib lib
+          mv /tmp/uu_ios_pubspec.yaml pubspec.yaml
+
+          flutter pub get
+          flutter build ios --release --no-codesign
+
+      - name: Embed uucore.framework & package Unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R client_flutter/build/ios/iphoneos/Runner.app Payload/Runner.app
+          mkdir -p Payload/Runner.app/Frameworks
+          cp -R build-ios/uucore.framework Payload/Runner.app/Frameworks/uucore.framework
+          zip -qry UURemoteLite-iOS-Unsigned.ipa Payload
+
+      - name: Upload iOS Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UURemoteLite-iOS-Unsigned
+          path: UURemoteLite-iOS-Unsigned.ipa
+
+  # ============================================================================
+  # 4. Windows x64 Client + Host + One-Click Server (.zip)
   # ============================================================================
   build-windows:
     name: Package Windows x64 (.zip)
@@ -110,7 +227,7 @@ jobs:
           flutter pub get
           flutter build windows --release
 
-      - name: Bundle uucore.dll & uu-server-lite.exe into portable ZIP
+      - name: Bundle uucore.dll, uu-server-lite.exe & start-server.bat into ZIP
         shell: pwsh
         run: |
           $relDir = "client_flutter/build/windows/x64/runner/Release"
@@ -118,6 +235,7 @@ jobs:
           $srvPath = (Get-ChildItem -Path "build-win" -Filter "uu-server-lite.exe" -Recurse | Select-Object -First 1).FullName
           Copy-Item $dllPath "$relDir/uucore.dll" -Force
           Copy-Item $srvPath "$relDir/uu-server-lite.exe" -Force
+          Copy-Item "server-lite/scripts/start-server.bat" "$relDir/start-server.bat" -Force
           Compress-Archive -Path "$relDir/*" -DestinationPath "UURemoteLite-Windows-x64.zip" -Force
 
       - name: Upload Windows Portable ZIP Artifact
@@ -127,7 +245,7 @@ jobs:
           path: UURemoteLite-Windows-x64.zip
 
   # ============================================================================
-  # 3. Android (.apk with NDK C++20 libuucore.so for arm64-v8a & x86_64)
+  # 5. Android Controller App (.apk)
   # ============================================================================
   build-android:
     name: Package Android (.apk)
@@ -150,7 +268,6 @@ jobs:
       - name: Build Android NDK libuucore.so (arm64-v8a & x86_64)
         run: |
           NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | sort -V | tail -n 1)
-          echo "Using Android NDK: $NDK_PATH"
           for ABI in arm64-v8a x86_64; do
             cmake -G "Unix Makefiles" -B build-android-$ABI \
               -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
@@ -170,7 +287,6 @@ jobs:
           rm -rf lib && mv /tmp/uu_lib_backup lib
           mv /tmp/uu_pubspec_backup.yaml pubspec.yaml
 
-          # Ensure INTERNET permission is present in Release AndroidManifest.xml for UDP sockets!
           if ! grep -q "android.permission.INTERNET" android/app/src/main/AndroidManifest.xml; then
             sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>/' android/app/src/main/AndroidManifest.xml
           fi
@@ -191,11 +307,61 @@ jobs:
           path: UURemoteLite-Android.apk
 
   # ============================================================================
-  # 4. Auto-Publish GitHub Release on Tag Push (e.g. git tag v1.0.0 && git push --tags)
+  # 6. Linux Desktop Client (.tar.gz)
+  # ============================================================================
+  build-linux-client:
+    name: Package Linux Desktop Client (.tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install GTK3 & Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Build native Linux libuucore.so
+        run: |
+          cmake -B build-linux -DCMAKE_BUILD_TYPE=Release -DUU_BUILD_TOOLS=OFF
+          cmake --build build-linux --config Release -j4
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Scaffold & build Flutter Linux Desktop App
+        working-directory: client_flutter
+        run: |
+          cp -R lib /tmp/uu_linux_lib
+          cp pubspec.yaml /tmp/uu_linux_pubspec.yaml
+          flutter create . --project-name uu_remote_lite --platforms=linux
+          rm -rf lib && mv /tmp/uu_linux_lib lib
+          mv /tmp/uu_linux_pubspec.yaml pubspec.yaml
+
+          flutter pub get
+          flutter build linux --release
+
+      - name: Bundle libuucore.so & archive Linux Client
+        run: |
+          BUNDLE_DIR="client_flutter/build/linux/x64/release/bundle"
+          mkdir -p "$BUNDLE_DIR/lib"
+          cp build-linux/libuucore.so "$BUNDLE_DIR/lib/libuucore.so"
+          tar -czf UURemoteLite-Client-Linux-x64.tar.gz -C "$BUNDLE_DIR" .
+
+      - name: Upload Linux Desktop Client Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UURemoteLite-Client-Linux-x64
+          path: UURemoteLite-Client-Linux-x64.tar.gz
+
+  # ============================================================================
+  # 7. Auto-Publish GitHub Release on Tag Push (e.g. git tag v1.0.0 && git push --tags)
   # ============================================================================
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-macos, build-windows, build-android]
+    needs: [build-server-linux, build-macos, build-ios, build-windows, build-android, build-linux-client]
     runs-on: ubuntu-latest
     steps:
       - name: Download all platform artifacts
@@ -208,6 +374,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            release-assets/UURemoteLite-Server-Linux-x64.tar.gz
             release-assets/UURemoteLite-macOS.dmg
+            release-assets/UURemoteLite-iOS-Unsigned.ipa
             release-assets/UURemoteLite-Windows-x64.zip
             release-assets/UURemoteLite-Android.apk
+            release-assets/UURemoteLite-Client-Linux-x64.tar.gz

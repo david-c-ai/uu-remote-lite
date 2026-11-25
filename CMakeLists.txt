@@ -17,6 +17,8 @@ else()
     option(UU_BUILD_TOOLS "Build server and benchmark executables" ON)
 endif()
 
+find_package(Threads REQUIRED)
+
 # 1. Ultra-lightweight Rendezvous (hbbs) + Zero-Copy Relay (hbbr) Server
 if(UU_BUILD_TOOLS)
     add_executable(uu-server-lite
@@ -24,6 +26,7 @@ if(UU_BUILD_TOOLS)
         server-lite/src/main.cpp
     )
     target_include_directories(uu-server-lite PRIVATE server-lite/include)
+    target_link_libraries(uu-server-lite PRIVATE Threads::Threads)
     if(WIN32)
         target_link_libraries(uu-server-lite PRIVATE ws2_32)
     endif()
@@ -69,6 +72,8 @@ elseif(WIN32)
     target_link_libraries(uucore PRIVATE ws2_32 d3d11 dxgi user32 gdi32)
 elseif(ANDROID)
     target_link_libraries(uucore PRIVATE mediandk log)
+else()
+    target_link_libraries(uucore PRIVATE Threads::Threads)
 endif()
 
 # 3. End-to-End Benchmark & Verification Suite

@@ -106,7 +106,11 @@ class UUCoreBridge {
   static UUCoreBridge? tryLoad() {
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     final candidates = <String>[
-      if (Platform.isMacOS) ...[
+      if (Platform.isIOS) ...[
+        '$exeDir/Frameworks/uucore.framework/uucore',
+        'uucore.framework/uucore',
+        '$exeDir/Frameworks/libuucore.dylib',
+      ] else if (Platform.isMacOS) ...[
         '$exeDir/../Frameworks/libuucore.dylib',
         '$exeDir/libuucore.dylib',
         'libuucore.dylib',
@@ -114,24 +118,28 @@ class UUCoreBridge {
       ] else if (Platform.isWindows) ...[
         '$exeDir\\uucore.dll',
         'uucore.dll',
-      ] else if (!Platform.isIOS) ...[
+      ] else if (Platform.isLinux) ...[
+        '$exeDir/lib/libuucore.so',
+        '$exeDir/libuucore.so',
+        'libuucore.so',
+      ] else ...[
         'libuucore.so',
       ]
     ];
-
-    if (Platform.isIOS) {
-      try {
-        return UUCoreBridge._(ffi.DynamicLibrary.process());
-      } catch (_) {
-        return null;
-      }
-    }
 
     for (final path in candidates) {
       try {
         return UUCoreBridge._(ffi.DynamicLibrary.open(path));
       } catch (_) {
         continue;
+      }
+    }
+
+    if (Platform.isIOS) {
+      try {
+        return UUCoreBridge._(ffi.DynamicLibrary.process());
+      } catch (_) {
+        return null;
       }
     }
     return null;
