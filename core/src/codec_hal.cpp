@@ -705,9 +705,9 @@ public:
                 AMediaFormat* fmt = AMediaCodec_getOutputFormat(codec_);
                 if (fmt) {
                     int32_t v = 0;
-                    if (AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_STRIDE, &v) && v > 0) stride_ = v;
-                    if (AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) && v > 0) slice_h_ = v;
-                    if (AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, &v)) color_fmt_ = v;
+                    if (AMediaFormat_getInt32(fmt, "stride", &v) && v > 0) stride_ = v;
+                    if (AMediaFormat_getInt32(fmt, "slice-height", &v) && v > 0) slice_h_ = v;
+                    if (AMediaFormat_getInt32(fmt, "color-format", &v)) color_fmt_ = v;
                     AMediaFormat_delete(fmt);
                 }
                 continue;
@@ -738,11 +738,11 @@ private:
         if (!codec_) return false;
 
         AMediaFormat* fmt = AMediaFormat_new();
-        AMediaFormat_setString(fmt, AMEDIAFORMAT_KEY_MIME, "video/hevc");
-        AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_WIDTH, width);
-        AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_HEIGHT, height);
-        AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, 21); // COLOR_FormatYUV420SemiPlanar (NV12)
-        AMediaFormat_setBuffer(fmt, "csd-0", csd.data(), csd.size());
+        AMediaFormat_setString(fmt, "mime", "video/hevc");
+        AMediaFormat_setInt32(fmt, "width", width);
+        AMediaFormat_setInt32(fmt, "height", height);
+        AMediaFormat_setInt32(fmt, "color-format", 21); // COLOR_FormatYUV420SemiPlanar (NV12)
+        AMediaFormat_setBuffer(fmt, "csd-0", const_cast<uint8_t*>(csd.data()), csd.size());
 
         media_status_t st = AMediaCodec_configure(codec_, fmt, nullptr, nullptr, 0);
         AMediaFormat_delete(fmt);
