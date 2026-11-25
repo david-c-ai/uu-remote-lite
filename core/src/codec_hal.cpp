@@ -219,13 +219,23 @@ bool EncodeHardwareJpeg(const uint8_t* bgra, uint16_t width, uint16_t height,
             var.fltVal = quality;
             prop_bag->Write(1, &opt, &var);
         }
-        WICPixelFormatGUID pf = GUID_WICPixelFormat32bppBGRA;
-        UINT stride = static_cast<UINT>(width) * 4;
-        UINT total = stride * height;
+        // WIC JPEG encoder natively consumes 24bpp BGR (no alpha channel).
+        // Passing 32bpp BGRA directly can cause WIC to negotiate 24bpp BGR in-out,
+        // leading to stride mismatch & diagonal color stripes! Convert BGRA -> 24bpp BGR cleanly.
+        const UINT bgr_stride = static_cast<UINT>(width) * 3;
+        const UINT bgr_total = bgr_stride * height;
+        std::vector<uint8_t> bgr24(bgr_total);
+        const size_t px_count = static_cast<size_t>(width) * height;
+        for (size_t i = 0; i < px_count; ++i) {
+            bgr24[i * 3 + 0] = bgra[i * 4 + 0]; // B
+            bgr24[i * 3 + 1] = bgra[i * 4 + 1]; // G
+            bgr24[i * 3 + 2] = bgra[i * 4 + 2]; // R
+        }
+        WICPixelFormatGUID pf = GUID_WICPixelFormat24bppBGR;
         if (SUCCEEDED(frame->Initialize(prop_bag)) &&
             SUCCEEDED(frame->SetSize(width, height)) &&
             SUCCEEDED(frame->SetPixelFormat(&pf)) &&
-            SUCCEEDED(frame->WritePixels(height, stride, total, const_cast<BYTE*>(bgra))) &&
+            SUCCEEDED(frame->WritePixels(height, bgr_stride, bgr_total, bgr24.data())) &&
             SUCCEEDED(frame->Commit()) &&
             SUCCEEDED(encoder->Commit())) {
             HGLOBAL hmem = nullptr;

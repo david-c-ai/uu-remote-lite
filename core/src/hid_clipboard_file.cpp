@@ -90,10 +90,12 @@ void InputDispatcher::ApplyMouse(const PayloadMouseEvent& ev) {
 #elif defined(_WIN32)
     INPUT inp{};
     inp.type = INPUT_MOUSE;
-    if (ev.is_relative && changed == 0) {
-        inp.mi.dx = ev.dx;
-        inp.mi.dy = ev.dy;
-        inp.mi.dwFlags = MOUSEEVENTF_MOVE;
+    if (ev.is_relative) {
+        if (ev.dx != 0 || ev.dy != 0) {
+            inp.mi.dx = ev.dx;
+            inp.mi.dy = ev.dy;
+            inp.mi.dwFlags = MOUSEEVENTF_MOVE;
+        }
     } else {
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
         int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -111,11 +113,16 @@ void InputDispatcher::ApplyMouse(const PayloadMouseEvent& ev) {
     if (changed & 0x02) {
         inp.mi.dwFlags |= (ev.button_mask & 0x02) ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
     }
+    if (changed & 0x04) {
+        inp.mi.dwFlags |= (ev.button_mask & 0x04) ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+    }
     if (ev.wheel_y != 0) {
         inp.mi.dwFlags |= MOUSEEVENTF_WHEEL;
         inp.mi.mouseData = static_cast<DWORD>(ev.wheel_y);
     }
-    SendInput(1, &inp, sizeof(INPUT));
+    if (inp.mi.dwFlags != 0) {
+        SendInput(1, &inp, sizeof(INPUT));
+    }
 #endif
 }
 
@@ -202,7 +209,13 @@ void InputDispatcher::ApplyKey(const PayloadKeyInput& ev) {
         SendInput(1, &inp, sizeof(INPUT));
     };
 
-    if (ev.is_down) {
+    bool is_mod_key = (win_vk == VK_SHIFT || win_vk == VK_LSHIFT || win_vk == VK_RSHIFT ||
+                       win_vk == VK_CONTROL || win_vk == VK_LCONTROL || win_vk == VK_RCONTROL ||
+                       win_vk == VK_MENU || win_vk == VK_LMENU || win_vk == VK_RMENU ||
+                       win_vk == VK_LWIN || win_vk == VK_RWIN);
+    if (is_mod_key) {
+        send_vk(static_cast<WORD>(win_vk), ev.is_down != 0);
+    } else if (ev.is_down) {
         if (mods & kModShift) send_vk(VK_SHIFT, true);
         if (mods & kModCtrl)  send_vk(VK_CONTROL, true);
         if (mods & kModAlt)   send_vk(VK_MENU, true);

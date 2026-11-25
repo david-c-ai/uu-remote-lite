@@ -416,31 +416,43 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
                       value: _hostServiceActive,
                       onChanged: _toggleHostDaemon,
                     ),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _selfIdCtrl,
-                            decoration: const InputDecoration(
-                              labelText: '本机设备 ID',
-                              prefixIcon: Icon(Icons.tag_rounded, size: 19),
-                              border: OutlineInputBorder(),
-                              isDense: true,
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _selfIdCtrl,
+                                decoration: const InputDecoration(
+                                  labelText: '本机设备 ID',
+                                  prefixIcon: Icon(Icons.tag_rounded, size: 19),
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: TextField(
-                            controller: _pinCtrl,
-                            decoration: const InputDecoration(
-                              labelText: '连接验证码',
-                              prefixIcon: Icon(Icons.key_rounded, size: 19),
-                              border: OutlineInputBorder(),
-                              isDense: true,
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: TextField(
+                                controller: _pinCtrl,
+                                decoration: const InputDecoration(
+                                  labelText: '连接验证码',
+                                  prefixIcon: Icon(Icons.key_rounded, size: 19),
+                                  border: OutlineInputBorder(),
+                                  isDense: true,
+                                ),
+                              ),
                             ),
-                          ),
+                          ],
                         ),
+                        if (Platform.isMacOS) ...[
+                          const SizedBox(height: 10),
+                          const Text(
+                            '提示：macOS 覆盖安装新版本后若提示权限或无画面，请在「系统设置 → 隐私与安全性 → 屏幕与系统音频录制 / 辅助功能」中先关闭再重新勾选 DirRemote 并重启 App。',
+                            style: TextStyle(color: Colors.amberAccent, fontSize: 11.5, height: 1.35),
+                          ),
+                        ],
                       ],
                     ),
                   ),

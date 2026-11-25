@@ -1,7 +1,7 @@
 name: dir_remote
 description: DirRemote — Ultra-lightweight, high-speed, low-bandwidth multi-platform remote control client (Windows / macOS / iOS / Android / Linux).
 publish_to: "none"
-version: 1.2.0+4
+version: 1.2.1+5
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

@@ -187,6 +187,8 @@ private:
     std::atomic<bool> audio_enabled_{true};
     std::atomic<bool> audio_capturer_started_{false};
     std::atomic<bool> audio_player_started_{false};
+    uint64_t audio_next_retry_ms_ = 0;
+    uint8_t audio_start_attempts_ = 0;
     std::atomic<uint32_t> audio_tx_seq_{1};
     std::atomic<uint64_t> audio_tx_pkts_{0};
     std::atomic<uint64_t> audio_rx_pkts_{0};

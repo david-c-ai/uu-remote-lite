@@ -172,8 +172,9 @@ class _RemoteCanvasState extends State<RemoteCanvas> with SingleTickerProviderSt
                             ),
                             const SizedBox(height: 14),
                             Text(
-                              '已连接 · 正在同步屏幕 ${widget.telemetry.activeMonitor + 1} 画面...',
-                              style: const TextStyle(color: Colors.white60, fontSize: 13),
+                              '已连接 · 正在同步屏幕 ${widget.telemetry.activeMonitor + 1} 画面...\n若长时间无画面，请在被控端重新勾选「屏幕录制」权限并重启 App',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white60, fontSize: 12.5, height: 1.5),
                             ),
                           ],
                         ),

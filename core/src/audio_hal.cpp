@@ -332,8 +332,15 @@ private:
             std::vector<int16_t> accum;
             uint32_t sr = mix_fmt->nSamplesPerSec ? mix_fmt->nSamplesPerSec : 48000;
             uint16_t ch = mix_fmt->nChannels ? mix_fmt->nChannels : 2;
-            bool is_float = (mix_fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) ||
-                            (mix_fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE && mix_fmt->wBitsPerSample == 32);
+            static constexpr GUID kIeeeFloatGuid = {
+                0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+            bool is_float = (mix_fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT);
+            if (!is_float && mix_fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+                mix_fmt->cbSize >= 22) {
+                const auto* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(mix_fmt);
+                is_float = (std::memcmp(&ext->SubFormat, &kIeeeFloatGuid, sizeof(GUID)) == 0);
+            }
+            bool is_int32 = (!is_float && mix_fmt->wBitsPerSample == 32);
 
             while (running_.load(std::memory_order_relaxed)) {
                 UINT32 pkt_len = 0;
@@ -353,6 +360,14 @@ private:
                             for (UINT32 i = 0; i < num_frames; ++i) {
                                 int16_t l = FloatToInt16(fptr[i * ch]);
                                 int16_t r = (ch >= 2) ? FloatToInt16(fptr[i * ch + 1]) : l;
+                                accum.push_back(l);
+                                accum.push_back(r);
+                            }
+                        } else if (is_int32 && data) {
+                            const int32_t* iptr = reinterpret_cast<const int32_t*>(data);
+                            for (UINT32 i = 0; i < num_frames; ++i) {
+                                int16_t l = static_cast<int16_t>(iptr[i * ch] >> 16);
+                                int16_t r = (ch >= 2) ? static_cast<int16_t>(iptr[i * ch + 1] >> 16) : l;
                                 accum.push_back(l);
                                 accum.push_back(r);
                             }

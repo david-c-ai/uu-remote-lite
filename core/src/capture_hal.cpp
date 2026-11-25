@@ -296,69 +296,82 @@ public:
         CGImageRef img = nullptr;
 #if defined(__OBJC__)
         if (@available(macOS 14.0, *)) {
-            if (!CGPreflightScreenCaptureAccess() && !prompted_permission_) {
-                prompted_permission_ = true;
-                if (!std::getenv("CI")) {
-                    CGRequestScreenCaptureAccess();
+            bool has_perm = CGPreflightScreenCaptureAccess();
+            if (!has_perm) {
+                if (!prompted_permission_) {
+                    prompted_permission_ = true;
+                    if (!std::getenv("CI")) {
+                        CGRequestScreenCaptureAccess();
+                    }
                 }
+                // Never flash synthetic moving stripes when TCC screen capture permission is missing/stale!
+                return false;
             }
-            if (CGPreflightScreenCaptureAccess()) {
-                if (!cached_filter_ || !cached_cfg_) {
-                    dispatch_semaphore_t init_sem = dispatch_semaphore_create(0);
-                    [SCShareableContent getShareableContentWithCompletionHandler:^(
-                                            SCShareableContent* content, NSError* err) {
-                        if (content && !err && content.displays.count > 0) {
-                            SCDisplay* target = content.displays.firstObject;
-                            for (SCDisplay* d in content.displays) {
-                                if (d.displayID == active_display_) {
-                                    target = d;
-                                    break;
-                                }
-                            }
-                            cached_filter_ = [[SCContentFilter alloc] initWithDisplay:target
-                                                                     excludingWindows:@[]];
-                            SCStreamConfiguration* cfg = [[SCStreamConfiguration alloc] init];
-                            size_t tw = target.width > 0 ? target.width : 1280;
-                            size_t th = target.height > 0 ? target.height : 800;
-                            if (tw > 1280) {
-                                th = (th * 1280) / tw;
-                                tw = 1280;
-                            }
-                            cfg.width = (tw & ~size_t(1));
-                            cfg.height = (th & ~size_t(1));
-                            cfg.showsCursor = NO;
-                            cached_cfg_ = cfg;
-                        }
-                        dispatch_semaphore_signal(init_sem);
-                    }];
-                    dispatch_semaphore_wait(init_sem, dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC));
-                }
 
-                if (cached_filter_ && cached_cfg_) {
-                    __block CGImageRef captured = nullptr;
-                    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-                    [SCScreenshotManager captureImageWithFilter:cached_filter_
-                                                  configuration:cached_cfg_
-                                              completionHandler:^(CGImageRef sample, NSError* sErr) {
-                                                  if (sample && !sErr) {
-                                                      captured = CGImageRetain(sample);
-                                                  }
-                                                  dispatch_semaphore_signal(sem);
-                                              }];
-                    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC));
-                    img = captured;
+            if (!cached_filter_ || !cached_cfg_) {
+                dispatch_semaphore_t init_sem = dispatch_semaphore_create(0);
+                [SCShareableContent getShareableContentWithCompletionHandler:^(
+                                        SCShareableContent* content, NSError* err) {
+                    if (content && !err && content.displays.count > 0) {
+                        SCDisplay* target = content.displays.firstObject;
+                        for (SCDisplay* d in content.displays) {
+                            if (d.displayID == active_display_) {
+                                target = d;
+                                break;
+                            }
+                        }
+                        cached_filter_ = [[SCContentFilter alloc] initWithDisplay:target
+                                                                 excludingWindows:@[]];
+                        SCStreamConfiguration* cfg = [[SCStreamConfiguration alloc] init];
+                        size_t tw = target.width > 0 ? target.width : 1280;
+                        size_t th = target.height > 0 ? target.height : 800;
+                        if (tw > 1280) {
+                            th = (th * 1280) / tw;
+                            tw = 1280;
+                        }
+                        cfg.width = (tw & ~size_t(1));
+                        cfg.height = (th & ~size_t(1));
+                        cfg.showsCursor = NO;
+                        cached_cfg_ = cfg;
+                    }
+                    dispatch_semaphore_signal(init_sem);
+                }];
+                dispatch_semaphore_wait(init_sem, dispatch_time(DISPATCH_TIME_NOW, 800 * NSEC_PER_MSEC));
+            }
+
+            if (cached_filter_ && cached_cfg_) {
+                __block CGImageRef captured = nullptr;
+                __block bool had_error = false;
+                dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+                [SCScreenshotManager captureImageWithFilter:cached_filter_
+                                              configuration:cached_cfg_
+                                          completionHandler:^(CGImageRef sample, NSError* sErr) {
+                                              if (sample && !sErr) {
+                                                  captured = CGImageRetain(sample);
+                                              } else {
+                                                  had_error = true;
+                                              }
+                                              dispatch_semaphore_signal(sem);
+                                          }];
+                long timed_out = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 350 * NSEC_PER_MSEC));
+                if (had_error || timed_out != 0) {
+                    // Self-heal stale filter (e.g. after display sleep/reconfig) on next frame
+                    cached_filter_ = nil;
+                    cached_cfg_ = nil;
                 }
+                img = captured;
             }
         }
 #endif
         if (!img) {
-            return fallback_.CaptureNext(out_frame, force_keyframe);
+            // Skip transient capture miss cleanly; never emit synthetic moving stripes on real hosts!
+            return false;
         }
         size_t w = CGImageGetWidth(img);
         size_t h = CGImageGetHeight(img);
         if (w == 0 || h == 0) {
             CFRelease(img);
-            return fallback_.CaptureNext(out_frame, force_keyframe);
+            return false;
         }
 
         out_frame.frame_id = ++seq_;
@@ -421,7 +434,16 @@ private:
 class WinNativeCapturer : public IScreenCapturer {
 public:
     WinNativeCapturer() {
-        SetProcessDPIAware();
+        // Prefer Per-Monitor DPI Awareness V2 on Win10/11 so multi-monitor mixed scaling never clips!
+        using SetDpiCtxFn = BOOL(WINAPI*)(HANDLE);
+        if (HMODULE u32 = GetModuleHandleA("user32.dll")) {
+            auto fn = reinterpret_cast<SetDpiCtxFn>(GetProcAddress(u32, "SetProcessDpiAwarenessContext"));
+            if (!fn || !fn(reinterpret_cast<HANDLE>(static_cast<intptr_t>(-4)))) {
+                SetProcessDPIAware();
+            }
+        } else {
+            SetProcessDPIAware();
+        }
         auto mons = EnumerateMonitors();
         mon_count_ = mons.empty() ? 1 : static_cast<uint8_t>(mons.size());
         if (!mons.empty()) {
@@ -502,47 +524,73 @@ public:
     bool CaptureNext(CapturedFrame& out_frame, bool force_keyframe) override {
         if (active_w_ == 0 || active_h_ == 0) RefreshMetrics();
         if (active_w_ == 0 || active_h_ == 0) {
-            return fallback_.CaptureNext(out_frame, force_keyframe);
+            return false;
         }
 
-        HDC screen_dc = GetDC(nullptr);
-        if (!screen_dc) return fallback_.CaptureNext(out_frame, force_keyframe);
+        // Auto-downscale 2K/4K Windows displays (>1440w) for ultra-fast low-latency Wi-Fi streaming
+        // while keeping native cur_mon_.width/height intact for exact 1:1 mouse coordinates!
+        uint16_t cap_w = active_w_;
+        uint16_t cap_h = active_h_;
+        if (cap_w > 1440) {
+            cap_h = static_cast<uint16_t>((static_cast<uint32_t>(cap_h) * 1440) / cap_w);
+            cap_w = 1440;
+        }
+        cap_w = static_cast<uint16_t>(cap_w & ~uint16_t(1));
+        cap_h = static_cast<uint16_t>(cap_h & ~uint16_t(1));
+        if (cap_w < 2 || cap_h < 2) return false;
 
-        if (!mem_dc_ || !dib_ || dib_w_ != active_w_ || dib_h_ != active_h_) {
+        HDC screen_dc = GetDC(nullptr);
+        if (!screen_dc) return false;
+
+        if (!mem_dc_ || !dib_ || dib_w_ != cap_w || dib_h_ != cap_h) {
             ReleaseDib();
             mem_dc_ = CreateCompatibleDC(screen_dc);
             BITMAPINFO bmi{};
             bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bmi.bmiHeader.biWidth = active_w_;
-            bmi.bmiHeader.biHeight = -static_cast<LONG>(active_h_); // Top-down BGRA
+            bmi.bmiHeader.biWidth = cap_w;
+            bmi.bmiHeader.biHeight = -static_cast<LONG>(cap_h); // Top-down 32bpp BGRA
             bmi.bmiHeader.biPlanes = 1;
             bmi.bmiHeader.biBitCount = 32;
             bmi.bmiHeader.biCompression = BI_RGB;
             dib_ = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &dib_bits_, nullptr, 0);
             if (mem_dc_ && dib_) {
                 old_obj_ = SelectObject(mem_dc_, dib_);
-                dib_w_ = active_w_;
-                dib_h_ = active_h_;
+                dib_w_ = cap_w;
+                dib_h_ = cap_h;
             }
         }
 
         bool ok = false;
         if (mem_dc_ && dib_ && dib_bits_) {
-            if (BitBlt(mem_dc_, 0, 0, active_w_, active_h_, screen_dc, origin_x_, origin_y_, SRCCOPY)) {
-                size_t total = static_cast<size_t>(active_w_) * active_h_ * 4;
+            BOOL blt_ok = FALSE;
+            if (cap_w == active_w_ && cap_h == active_h_) {
+                blt_ok = BitBlt(mem_dc_, 0, 0, cap_w, cap_h, screen_dc,
+                                origin_x_, origin_y_, SRCCOPY | CAPTUREBLT);
+            } else {
+                SetStretchBltMode(mem_dc_, HALFTONE);
+                SetBrushOrgEx(mem_dc_, 0, 0, nullptr);
+                blt_ok = StretchBlt(mem_dc_, 0, 0, cap_w, cap_h, screen_dc,
+                                    origin_x_, origin_y_, active_w_, active_h_,
+                                    SRCCOPY | CAPTUREBLT);
+            }
+            if (blt_ok) {
+                size_t total = static_cast<size_t>(cap_w) * cap_h * 4;
                 out_frame.frame_id = ++seq_;
-                out_frame.width = active_w_;
-                out_frame.height = active_h_;
-                out_frame.stride_bytes = static_cast<uint32_t>(active_w_) * 4;
+                out_frame.width = cap_w;
+                out_frame.height = cap_h;
+                out_frame.stride_bytes = static_cast<uint32_t>(cap_w) * 4;
                 out_frame.capture_ts_us = NowUs();
                 out_frame.bgra.resize(total);
                 std::memcpy(out_frame.bgra.data(), dib_bits_, total);
                 ok = true;
+            } else {
+                // Transient failure (e.g. UAC secure desktop / display reset): self-heal DIB without synthetic stripes!
+                ReleaseDib();
             }
         }
         ReleaseDC(nullptr, screen_dc);
 
-        if (!ok) return fallback_.CaptureNext(out_frame, force_keyframe);
+        if (!ok) return false;
         dirty_tracker_.Analyze(out_frame, force_keyframe || seq_ == 1);
         return true;
     }

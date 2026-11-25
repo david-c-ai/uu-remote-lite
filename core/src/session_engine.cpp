@@ -509,6 +509,8 @@ void PeerNode::NetworkLoop() {
                         path_.store(TransportPath::kDisconnected);
                         scheduler_.ClearMediaQueue();
                         last_rx_seq_ = 0;
+                        audio_start_attempts_ = 0;
+                        audio_next_retry_ms_ = 0;
                         if (encoder_) {
                             encoder_->SetPeerSupportsHevc(false);
                         }
@@ -837,7 +839,12 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
                     encoder_->SetCodecPreference(static_cast<CodecPreference>(
                         qc.codec_preference <= 3 ? qc.codec_preference : 0));
                 }
-                audio_enabled_.store(qc.audio_enabled != 0);
+                bool want_audio = (qc.audio_enabled != 0);
+                if (want_audio && !audio_enabled_.load()) {
+                    audio_start_attempts_ = 0;
+                    audio_next_retry_ms_ = 0;
+                }
+                audio_enabled_.store(want_audio);
                 if (capturer_ && qc.monitor_index != telemetry_.active_monitor) {
                     if (capturer_->SelectMonitor(qc.monitor_index)) {
                         scheduler_.ClearMediaQueue();
@@ -1049,14 +1056,27 @@ void PeerNode::HostCaptureLoop() {
             continue;
         }
 
-        // Manage Host System Audio Loopback stream dynamically
+        // Manage Host System Audio Loopback stream dynamically:
+        // Only start AFTER at least 3 video frames succeeded (confirming screen permission is live),
+        // with a 10s retry backoff so a denied/unavailable audio device NEVER stalls video capture!
         if (audio_capturer_ && !cfg_.use_synthetic_capture && std::getenv("CI") == nullptr) {
             bool want_audio = audio_enabled_.load(std::memory_order_relaxed);
-            if (want_audio && !audio_capturer_started_.load(std::memory_order_relaxed)) {
-                if (audio_capturer_->Start([this](const int16_t* pcm, size_t frames, uint32_t sr) {
-                        SendPcmAudioFrame(pcm, frames, sr);
-                    })) {
-                    audio_capturer_started_.store(true);
+            uint64_t frames_sent_now = 0;
+            {
+                std::lock_guard<std::mutex> lk(state_mu_);
+                frames_sent_now = telemetry_.frames_sent;
+            }
+            if (want_audio && !audio_capturer_started_.load(std::memory_order_relaxed) &&
+                frames_sent_now >= 3 && audio_start_attempts_ < 2) {
+                uint64_t now_ms = NowMs();
+                if (now_ms >= audio_next_retry_ms_) {
+                    ++audio_start_attempts_;
+                    audio_next_retry_ms_ = now_ms + 10000;
+                    if (audio_capturer_->Start([this](const int16_t* pcm, size_t frames, uint32_t sr) {
+                            SendPcmAudioFrame(pcm, frames, sr);
+                        })) {
+                        audio_capturer_started_.store(true);
+                    }
                 }
             } else if (!want_audio && audio_capturer_started_.exchange(false)) {
                 audio_capturer_->Stop();
