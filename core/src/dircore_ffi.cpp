@@ -151,6 +151,12 @@ void dir_node_send_key(DirHandle handle, uint16_t keycode, int32_t is_down, uint
     if (handle && handle->node) handle->node->SendKey(keycode, is_down != 0, modifiers);
 }
 
+void dir_node_send_text(DirHandle handle, const char* utf8_text) {
+    if (handle && handle->node && utf8_text && *utf8_text) {
+        handle->node->SendUnicodeText(utf8_text);
+    }
+}
+
 void dir_node_send_gamepad(DirHandle handle, uint16_t buttons,
                            int16_t lx, int16_t ly, int16_t rx, int16_t ry,
                            uint8_t lt, uint8_t rt) {
@@ -160,10 +166,12 @@ void dir_node_send_gamepad(DirHandle handle, uint16_t buttons,
 }
 
 void dir_node_set_options(DirHandle handle, uint8_t profile, uint8_t target_fps,
-                          int32_t privacy_curtain, uint8_t monitor_index) {
+                          int32_t privacy_curtain, uint8_t monitor_index,
+                          uint8_t codec_pref, int32_t audio_enabled) {
     if (!handle || !handle->node) return;
     auto qp = static_cast<uu::core::QualityProfile>(profile <= 2 ? profile : 1);
-    handle->node->SetQualityProfile(qp, target_fps, privacy_curtain != 0, monitor_index);
+    auto cp = static_cast<uu::core::CodecPreference>(codec_pref <= 3 ? codec_pref : 0);
+    handle->node->SetQualityProfile(qp, target_fps, privacy_curtain != 0, monitor_index, cp, audio_enabled != 0);
 }
 
 void dir_node_send_clipboard(DirHandle handle, const char* utf8_text) {

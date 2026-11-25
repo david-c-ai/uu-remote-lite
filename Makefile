@@ -3,7 +3,7 @@ CXXFLAGS := -std=c++20 -O3 -flto -Wall -Wextra -Wno-unused-parameter -Icore/incl
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-    APPLE_LDFLAGS := -framework Foundation -framework CoreFoundation -framework CoreGraphics -framework CoreVideo -framework CoreMedia -framework ImageIO -framework VideoToolbox -framework ApplicationServices -framework ScreenCaptureKit -lcompression
+    APPLE_LDFLAGS := -framework Foundation -framework CoreFoundation -framework CoreGraphics -framework CoreVideo -framework CoreMedia -framework ImageIO -framework VideoToolbox -framework AudioToolbox -framework ApplicationServices -framework ScreenCaptureKit -lcompression
     OBJCXX_FLAGS := -ObjC++ -fobjc-arc
     SHARED_EXT := dylib
     SHARED_FLAGS := -dynamiclib -install_name @rpath/libdircore.dylib
@@ -22,6 +22,8 @@ CORE_SRCS := \
     core/src/fec_qos.cpp \
     core/src/capture_hal.cpp \
     core/src/codec_hal.cpp \
+    core/src/keymap_hal.cpp \
+    core/src/audio_hal.cpp \
     core/src/hid_clipboard_file.cpp \
     core/src/session_engine.cpp \
     core/src/dircore_ffi.cpp

@@ -10,6 +10,28 @@ enum QualityPreset {
   final int defaultFps;
 }
 
+enum CodecPreference {
+  auto(0, '自动最优', '智能切换 GPU / JPEG / 窄带'),
+  gpuHevc(2, 'GPU H.265', 'VideoToolbox / MediaCodec 硬编硬解'),
+  hardwareJpeg(3, 'JPEG 极速', '硬件压缩 + libjpeg-turbo 抗丢包'),
+  tileLossless(1, 'Tile 无损', '文字代码清晰无损 · 静止0流量');
+
+  const CodecPreference(this.code, this.shortLabel, this.subtitle);
+  final int code;
+  final String shortLabel;
+  final String subtitle;
+}
+
+enum TrackpadSensitivity {
+  precise('精准', 0.65),
+  standard('标准', 1.0),
+  fast('快速', 1.45);
+
+  const TrackpadSensitivity(this.label, this.multiplier);
+  final String label;
+  final double multiplier;
+}
+
 enum MobileInputMode {
   trackpadRelative('触控板'),
   directTouchZoom('直触/缩放'),

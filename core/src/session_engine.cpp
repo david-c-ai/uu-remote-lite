@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 
@@ -138,16 +139,21 @@ uint32_t DetectLocalRouteIpBe(const uu::server::EndpointV4& target_ep) {
 struct HandshakeHello {
     uint8_t static_pub[32];
     uint64_t send_ts_us;
-    uint32_t codec_caps; // Bit 0: TileDeltaLz4, Bit 1: Apple HEVC, Bit 2: Hardware JPEG (Flutter libjpeg-turbo)
+    uint32_t codec_caps; // Bit 0: TileDeltaLz4, Bit 1: GPU HEVC (Apple VT / Android MediaCodec), Bit 2: Hardware JPEG
+    uint8_t os_type;     // HostOsType of sender for cross-OS Cmd<->Ctrl auto-mapping
 };
 #pragma pack(pop)
 
 uint32_t LocalCodecCaps() {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__ANDROID__)
     return 0x07;
 #else
     return 0x05;
 #endif
+}
+
+HostOsType EffectiveLocalOs(const NodeConfig& cfg) {
+    return (cfg.simulated_os_override != HostOsType::kUnknown) ? cfg.simulated_os_override : LocalOsType();
 }
 
 } // namespace
@@ -169,10 +175,14 @@ PeerNode::PeerNode(const NodeConfig& cfg)
         } else {
             capturer_ = CreateNativeCapturer();
             input_dispatcher_.SetOsInjectionEnabled(true);
+            audio_capturer_ = CreateSystemAudioCapturer();
         }
         encoder_ = CreateHybridVideoEncoder();
     } else {
         decoder_ = CreateHybridVideoDecoder();
+        if (!cfg_.use_synthetic_capture) {
+            audio_player_ = CreateSystemAudioPlayer();
+        }
     }
 }
 
@@ -207,6 +217,14 @@ bool PeerNode::Start() {
 
 void PeerNode::Stop() {
     if (!running_.exchange(false)) return;
+    if (audio_capturer_) {
+        audio_capturer_->Stop();
+        audio_capturer_started_.store(false);
+    }
+    if (audio_player_) {
+        audio_player_->Stop();
+        audio_player_started_.store(false);
+    }
     input_dispatcher_.ReleaseAllHeldKeys();
     if (capture_thread_.joinable()) capture_thread_.join();
     if (net_thread_.joinable()) net_thread_.join();
@@ -273,21 +291,73 @@ void PeerNode::SendKey(uint16_t keycode, bool is_down, uint8_t modifiers) {
     SendEncrypted(QoSLane::kP2_Reliable, PacketType::kKeyInput, &ev, sizeof(ev), rseq);
 }
 
+void PeerNode::SendUnicodeText(const std::string& utf8_text) {
+    if (utf8_text.empty()) return;
+    size_t len = std::min<size_t>(utf8_text.size(), 900);
+    uint32_t rseq = p2_seq_.fetch_add(1);
+    SendEncrypted(QoSLane::kP2_Reliable, PacketType::kTextInput, utf8_text.data(), len, rseq);
+}
+
 void PeerNode::SendGamepad(const PayloadGamepad& pad) {
     SendEncrypted(QoSLane::kP0_FastInput, PacketType::kGamepadState, &pad, sizeof(pad));
 }
 
 void PeerNode::SetQualityProfile(QualityProfile profile, uint8_t target_fps,
-                                 bool privacy_curtain, uint8_t monitor_index) {
+                                 bool privacy_curtain, uint8_t monitor_index,
+                                 CodecPreference codec_pref, bool audio_enabled) {
     bwe_.SetProfile(profile);
+    audio_enabled_.store(audio_enabled);
+    if (!audio_enabled && audio_player_ && audio_player_started_.exchange(false)) {
+        audio_player_->Stop();
+    }
     PayloadQualityControl qc{};
     qc.profile = profile;
     qc.target_fps = target_fps;
     qc.monitor_index = monitor_index;
     qc.privacy_curtain = privacy_curtain ? 1 : 0;
     qc.max_bitrate_kbps = (profile == QualityProfile::kUltraSaver300K) ? 600 : 25000;
+    qc.codec_preference = static_cast<uint8_t>(codec_pref);
+    qc.audio_enabled = audio_enabled ? 1 : 0;
     uint32_t rseq = p2_seq_.fetch_add(1);
     SendEncrypted(QoSLane::kP2_Reliable, PacketType::kQualityControl, &qc, sizeof(qc), rseq);
+}
+
+void PeerNode::InjectSyntheticAudioFrameForTest(const int16_t* pcm_interleaved,
+                                                size_t stereo_frames,
+                                                uint32_t sample_rate) {
+    SendPcmAudioFrame(pcm_interleaved, stereo_frames, sample_rate);
+}
+
+void PeerNode::SendPcmAudioFrame(const int16_t* pcm_interleaved,
+                                 size_t stereo_frames,
+                                 uint32_t sample_rate) {
+    if (!IsConnected() || !audio_enabled_.load(std::memory_order_relaxed) || !pcm_interleaved || stereo_frames == 0) {
+        return;
+    }
+    if (stereo_frames > 960) stereo_frames = 960;
+
+    std::lock_guard<std::mutex> lk(audio_tx_mu_);
+    PayloadAudioHeader ah{};
+    ah.seq = audio_tx_seq_.fetch_add(1);
+    ah.sample_rate = sample_rate > 0 ? sample_rate : 48000;
+    ah.channels = 2;
+    ah.codec_flag = 1; // IMA-ADPCM 4:1
+    ah.sample_frames = static_cast<uint16_t>(stereo_frames);
+    // Snapshot predictor state BEFORE encoding so each UDP audio packet is 100% self-contained!
+    ah.pred_l = audio_enc_l_.predictor;
+    ah.pred_r = audio_enc_r_.predictor;
+    ah.step_l = audio_enc_l_.step_index;
+    ah.step_r = audio_enc_r_.step_index;
+
+    std::vector<uint8_t> adpcm;
+    AdpcmStereoCodec::Encode(pcm_interleaved, stereo_frames, audio_enc_l_, audio_enc_r_, adpcm);
+    ah.data_bytes = static_cast<uint16_t>(adpcm.size());
+
+    std::vector<uint8_t> pkt(sizeof(ah) + adpcm.size());
+    std::memcpy(pkt.data(), &ah, sizeof(ah));
+    std::memcpy(pkt.data() + sizeof(ah), adpcm.data(), adpcm.size());
+    SendEncrypted(QoSLane::kP1_Media, PacketType::kAudioFrame, pkt.data(), pkt.size());
+    ++audio_tx_pkts_;
 }
 
 void PeerNode::SendClipboardText(const std::string& utf8_text) {
@@ -464,6 +534,7 @@ void PeerNode::NetworkLoop() {
                         std::memcpy(hello.static_pub, static_keys_.pub.data(), 32);
                         hello.send_ts_us = NowUs();
                         hello.codec_caps = LocalCodecCaps();
+                        hello.os_type = static_cast<uint8_t>(EffectiveLocalOs(cfg_));
                         SendEncrypted(QoSLane::kP0_FastInput, PacketType::kHelloInit, &hello, sizeof(hello));
 
                         std::vector<uint8_t> hello_wire;
@@ -492,6 +563,7 @@ void PeerNode::NetworkLoop() {
                             std::memcpy(hello.static_pub, static_keys_.pub.data(), 32);
                             hello.send_ts_us = NowUs();
                             hello.codec_caps = LocalCodecCaps();
+                            hello.os_type = static_cast<uint8_t>(EffectiveLocalOs(cfg_));
                             SendEncrypted(QoSLane::kP0_FastInput, PacketType::kHelloInit, &hello, sizeof(hello));
                         }
                     }
@@ -603,15 +675,23 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
 
     switch (hdr->type) {
         case PacketType::kHelloInit: {
+            bool peer_hevc = false;
+            bool peer_jpeg = false;
+            HostOsType peer_os = HostOsType::kUnknown;
+            if (pt.size() >= sizeof(HandshakeHello)) {
+                HandshakeHello peer_h{};
+                std::memcpy(&peer_h, pt.data(), sizeof(peer_h));
+                peer_hevc = (peer_h.codec_caps & 0x02) != 0;
+                peer_jpeg = (peer_h.codec_caps & 0x04) != 0;
+                peer_os = static_cast<HostOsType>(peer_h.os_type);
+            } else if (pt.size() >= 44) {
+                uint32_t caps = 0;
+                std::memcpy(&caps, pt.data() + 40, 4);
+                peer_hevc = (caps & 0x02) != 0;
+                peer_jpeg = (caps & 0x04) != 0;
+            }
+            input_dispatcher_.SetPeerOsType(peer_os);
             if (encoder_) {
-                bool peer_hevc = false;
-                bool peer_jpeg = false;
-                if (pt.size() >= sizeof(HandshakeHello)) {
-                    HandshakeHello peer_h{};
-                    std::memcpy(&peer_h, pt.data(), sizeof(peer_h));
-                    peer_hevc = (peer_h.codec_caps & 0x02) != 0;
-                    peer_jpeg = (peer_h.codec_caps & 0x04) != 0;
-                }
                 encoder_->SetPeerSupportsHevc(peer_hevc);
                 encoder_->SetPeerSupportsJpeg((!cfg_.use_synthetic_capture || force_jpeg_test_) && peer_jpeg);
             }
@@ -619,20 +699,29 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
             std::memcpy(accept.static_pub, static_keys_.pub.data(), 32);
             accept.send_ts_us = NowUs();
             accept.codec_caps = LocalCodecCaps();
+            accept.os_type = static_cast<uint8_t>(EffectiveLocalOs(cfg_));
             SendEncrypted(QoSLane::kP0_FastInput, PacketType::kHelloAccept, &accept, sizeof(accept));
             force_next_idr_.store(true);
             break;
         }
         case PacketType::kHelloAccept: {
+            bool peer_hevc = false;
+            bool peer_jpeg = false;
+            HostOsType peer_os = HostOsType::kUnknown;
+            if (pt.size() >= sizeof(HandshakeHello)) {
+                HandshakeHello peer_h{};
+                std::memcpy(&peer_h, pt.data(), sizeof(peer_h));
+                peer_hevc = (peer_h.codec_caps & 0x02) != 0;
+                peer_jpeg = (peer_h.codec_caps & 0x04) != 0;
+                peer_os = static_cast<HostOsType>(peer_h.os_type);
+            } else if (pt.size() >= 44) {
+                uint32_t caps = 0;
+                std::memcpy(&caps, pt.data() + 40, 4);
+                peer_hevc = (caps & 0x02) != 0;
+                peer_jpeg = (caps & 0x04) != 0;
+            }
+            input_dispatcher_.SetPeerOsType(peer_os);
             if (encoder_) {
-                bool peer_hevc = false;
-                bool peer_jpeg = false;
-                if (pt.size() >= sizeof(HandshakeHello)) {
-                    HandshakeHello peer_h{};
-                    std::memcpy(&peer_h, pt.data(), sizeof(peer_h));
-                    peer_hevc = (peer_h.codec_caps & 0x02) != 0;
-                    peer_jpeg = (peer_h.codec_caps & 0x04) != 0;
-                }
                 encoder_->SetPeerSupportsHevc(peer_hevc);
                 encoder_->SetPeerSupportsJpeg((!cfg_.use_synthetic_capture || force_jpeg_test_) && peer_jpeg);
             }
@@ -701,6 +790,10 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
             HandleVideoPacket(hdr->type, pt.data(), pt.size());
             break;
         }
+        case PacketType::kAudioFrame: {
+            HandleAudioPacket(pt.data(), pt.size());
+            break;
+        }
         case PacketType::kMouseFast:
         case PacketType::kMouseClick: {
             if (pt.size() >= sizeof(PayloadMouseEvent)) {
@@ -718,6 +811,13 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
             }
             break;
         }
+        case PacketType::kTextInput: {
+            if (!pt.empty()) {
+                std::string txt(reinterpret_cast<const char*>(pt.data()), pt.size());
+                input_dispatcher_.ApplyUnicodeText(txt);
+            }
+            break;
+        }
         case PacketType::kGamepadState: {
             if (pt.size() >= sizeof(PayloadGamepad)) {
                 PayloadGamepad pad{};
@@ -727,10 +827,17 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
             break;
         }
         case PacketType::kQualityControl: {
-            if (pt.size() >= sizeof(PayloadQualityControl)) {
+            if (pt.size() >= 8) {
                 PayloadQualityControl qc{};
-                std::memcpy(&qc, pt.data(), sizeof(qc));
+                qc.codec_preference = 0;
+                qc.audio_enabled = 1;
+                std::memcpy(&qc, pt.data(), std::min(pt.size(), sizeof(qc)));
                 bwe_.SetProfile(qc.profile);
+                if (encoder_) {
+                    encoder_->SetCodecPreference(static_cast<CodecPreference>(
+                        qc.codec_preference <= 3 ? qc.codec_preference : 0));
+                }
+                audio_enabled_.store(qc.audio_enabled != 0);
                 if (capturer_ && qc.monitor_index != telemetry_.active_monitor) {
                     if (capturer_->SelectMonitor(qc.monitor_index)) {
                         scheduler_.ClearMediaQueue();
@@ -898,13 +1005,62 @@ void PeerNode::HandleVideoPacket(PacketType type, const uint8_t* payload, size_t
     }
 }
 
+void PeerNode::HandleAudioPacket(const uint8_t* payload, size_t len) {
+    if (len < sizeof(PayloadAudioHeader)) return;
+    PayloadAudioHeader ah{};
+    std::memcpy(&ah, payload, sizeof(ah));
+    if (sizeof(ah) + ah.data_bytes > len || ah.sample_frames == 0) return;
+
+    std::vector<int16_t> pcm;
+    if (ah.codec_flag == 1) {
+        AdpcmChannelState st_l{ah.pred_l, static_cast<uint8_t>(std::min<uint8_t>(ah.step_l, 88))};
+        AdpcmChannelState st_r{ah.pred_r, static_cast<uint8_t>(std::min<uint8_t>(ah.step_r, 88))};
+        AdpcmStereoCodec::Decode(payload + sizeof(ah), ah.data_bytes, ah.sample_frames, st_l, st_r, pcm);
+    } else if (ah.data_bytes >= ah.sample_frames * 4) {
+        pcm.resize(ah.sample_frames * 2);
+        std::memcpy(pcm.data(), payload + sizeof(ah), ah.sample_frames * 4);
+    }
+    if (pcm.empty()) return;
+
+    ++audio_rx_pkts_;
+    if (!audio_enabled_.load(std::memory_order_relaxed) || !audio_player_ || std::getenv("CI") != nullptr) {
+        return;
+    }
+    if (!audio_player_started_.load(std::memory_order_relaxed)) {
+        if (audio_player_->Start(ah.sample_rate > 0 ? ah.sample_rate : 48000,
+                                 ah.channels > 0 ? ah.channels : 2)) {
+            audio_player_started_.store(true);
+        }
+    }
+    if (audio_player_started_.load(std::memory_order_relaxed)) {
+        audio_player_->EnqueuePcm(pcm.data(), pcm.size() / 2);
+    }
+}
+
 void PeerNode::HostCaptureLoop() {
     constexpr size_t kMaxShardData = 960;
 
     while (running_.load(std::memory_order_relaxed)) {
         if (!IsConnected() || !capturer_ || !encoder_) {
+            if (audio_capturer_ && audio_capturer_started_.exchange(false)) {
+                audio_capturer_->Stop();
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
+        }
+
+        // Manage Host System Audio Loopback stream dynamically
+        if (audio_capturer_ && !cfg_.use_synthetic_capture && std::getenv("CI") == nullptr) {
+            bool want_audio = audio_enabled_.load(std::memory_order_relaxed);
+            if (want_audio && !audio_capturer_started_.load(std::memory_order_relaxed)) {
+                if (audio_capturer_->Start([this](const int16_t* pcm, size_t frames, uint32_t sr) {
+                        SendPcmAudioFrame(pcm, frames, sr);
+                    })) {
+                    audio_capturer_started_.store(true);
+                }
+            } else if (!want_audio && audio_capturer_started_.exchange(false)) {
+                audio_capturer_->Stop();
+            }
         }
 
         uint64_t loop_t0 = NowMs();

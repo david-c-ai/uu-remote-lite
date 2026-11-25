@@ -44,6 +44,7 @@ enum class PacketType : uint8_t {
     kFileOffer       = 0x35, // File transfer metadata (file_id, total_size, sha256, resume_offset)
     kFileChunk       = 0x36, // Resumable chunk payload
     kFileComplete    = 0x37, // Checksum verification result
+    kTextInput       = 0x38, // UTF-8 Unicode text input (Android IME Chinese/English/Emoji)
 };
 
 enum class QualityProfile : uint8_t {
@@ -142,12 +143,27 @@ struct PayloadGamepad {
     uint8_t lt, rt;    // 0..255 triggers
 };
 
+struct PayloadAudioHeader {
+    uint32_t seq;
+    uint32_t sample_rate;    // e.g. 48000
+    uint8_t channels;        // 2 = stereo
+    uint8_t codec_flag;      // 1 = IMA-ADPCM 4:1 compressed, 0 = raw int16 PCM
+    uint16_t sample_frames;  // Number of stereo frames per packet (e.g. 480 = 10ms)
+    int16_t pred_l;          // IMA-ADPCM left predictor state
+    int16_t pred_r;          // IMA-ADPCM right predictor state
+    uint8_t step_l;          // IMA-ADPCM left step index
+    uint8_t step_r;          // IMA-ADPCM right step index
+    uint16_t data_bytes;
+};
+
 struct PayloadQualityControl {
     QualityProfile profile;
     uint8_t target_fps;       // e.g., 30, 60, 120, 144
     uint8_t monitor_index;    // Multi-monitor switch
     uint8_t privacy_curtain;  // 1 = black out host physical display
     uint32_t max_bitrate_kbps;
+    uint8_t codec_preference; // 0 = Auto, 1 = TileLossless, 2 = GPU HEVC, 3 = HW JPEG
+    uint8_t audio_enabled;    // 1 = stream system audio, 0 = mute
 };
 
 struct PayloadFileOffer {

@@ -53,11 +53,16 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
   bool _connecting = false;
   bool _hostServiceActive = false;
   bool _privacyCurtain = false;
+  bool _audioEnabled = true;
+  bool _keyboardVisible = false;
   bool _topBarCollapsed = false;
   int _selectedMonitor = 0;
+  int _clickRippleSeq = 0;
 
   QualityPreset _preset = QualityPreset.balancedAuto;
+  CodecPreference _codecPref = CodecPreference.auto;
   MobileInputMode _mobileMode = MobileInputMode.trackpadRelative;
+  TrackpadSensitivity _sensitivity = TrackpadSensitivity.standard;
   ScreenOrientationMode _orientationMode = ScreenOrientationMode.autoRotate;
   ViewportScaleMode _scaleMode = ViewportScaleMode.contain;
 
@@ -278,13 +283,19 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
     });
   }
 
-  void _switchMonitor(int nextMonitor) {
-    setState(() => _selectedMonitor = nextMonitor);
+  void _pushSessionOptions() {
     _bridge?.setOptions(
       preset: _preset,
       privacyCurtain: _privacyCurtain,
-      monitorIndex: nextMonitor,
+      monitorIndex: _selectedMonitor,
+      codecPreference: _codecPref,
+      audioEnabled: _audioEnabled,
     );
+  }
+
+  void _switchMonitor(int nextMonitor) {
+    setState(() => _selectedMonitor = nextMonitor);
+    _pushSessionOptions();
   }
 
   Future<void> _disconnectSession() async {
@@ -294,6 +305,7 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
     if (!mounted) return;
     setState(() {
       _inSession = false;
+      _keyboardVisible = false;
       _topBarCollapsed = false;
       _frameImage?.dispose();
       _frameImage = null;
@@ -557,43 +569,74 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0D12),
+      resizeToAvoidBottomInset: false,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 1. Remote Desktop Canvas + Decoupled Cursor + Pinch Zoom
+          // 1. Remote Desktop Canvas + Precision 1px-Hotspot Cursor + Zoom-Aware Tap + Desktop Physical Keyboard
           RemoteCanvas(
             frameImage: _frameImage,
             telemetry: _telemetry,
             localCursorNorm: _localCursor,
             scaleMode: _scaleMode,
-            enablePinchZoom: _mobileMode == MobileInputMode.directTouchZoom,
+            enablePinchZoom: !_isDesktop && _mobileMode == MobileInputMode.directTouchZoom,
+            capturePhysicalKeyboard: _isDesktop && !_keyboardVisible,
+            clickRippleSeq: _clickRippleSeq,
             onPointerEventNorm: (xn, yn, btnMask, wheelY) {
-              setState(() => _localCursor = Offset(xn / 65535.0, yn / 65535.0));
+              setState(() {
+                _localCursor = Offset(xn / 65535.0, yn / 65535.0);
+                if (btnMask != 0) _clickRippleSeq++;
+              });
               _bridge?.sendMouse(xn, yn, buttonMask: btnMask, wheelY: wheelY);
+            },
+            onDirectTouchTapNorm: (xn, yn) {
+              setState(() {
+                _localCursor = Offset(xn / 65535.0, yn / 65535.0);
+                _clickRippleSeq++;
+              });
+              _bridge?.sendMouse(xn, yn, buttonMask: 0x01);
+              Future.delayed(const Duration(milliseconds: 28), () {
+                _bridge?.sendMouse(xn, yn, buttonMask: 0);
+              });
+            },
+            onPhysicalKey: (dirKeyCode, isDown, modifiers) {
+              _bridge?.sendKey(dirKeyCode, isDown: isDown, modifiers: modifiers);
             },
           ),
 
-          // 2. Mobile Gesture & Collapsible Quick-Action Overlay
+          // 2. Mobile Gesture, Virtual Keyboard, Dual-Stick Gamepad & Quick-Action Dock
           MobileTouchOverlay(
+            isDesktop: _isDesktop,
             mode: _mobileMode,
+            sensitivity: _sensitivity,
+            keyboardVisible: _keyboardVisible,
+            onToggleKeyboard: () => setState(() => _keyboardVisible = !_keyboardVisible),
+            onCycleSensitivity: () {
+              final next = switch (_sensitivity) {
+                TrackpadSensitivity.precise => TrackpadSensitivity.standard,
+                TrackpadSensitivity.standard => TrackpadSensitivity.fast,
+                TrackpadSensitivity.fast => TrackpadSensitivity.precise,
+              };
+              setState(() => _sensitivity = next);
+            },
             onRelativeTrackpadDelta: (dx, dy) {
               final next = Offset(
                 (_localCursor.dx + dx).clamp(0.0, 1.0),
                 (_localCursor.dy + dy).clamp(0.0, 1.0),
               );
               setState(() => _localCursor = next);
+              // Send exact normalized absolute coordinate (dx=0, dy=0) so cursor matches 1:1 with zero drift!
               _bridge?.sendMouse(
                 (next.dx * 65535).round(),
                 (next.dy * 65535).round(),
-                dx: (dx * 1920).round(),
-                dy: (dy * 1080).round(),
               );
             },
             onTrackpadClick: (btnMask) {
               final xn = (_localCursor.dx * 65535).round();
               final yn = (_localCursor.dy * 65535).round();
+              setState(() => _clickRippleSeq++);
               _bridge?.sendMouse(xn, yn, buttonMask: btnMask);
-              Future.delayed(const Duration(milliseconds: 25), () {
+              Future.delayed(const Duration(milliseconds: 28), () {
                 _bridge?.sendMouse(xn, yn, buttonMask: 0);
               });
             },
@@ -602,21 +645,25 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
               final yn = (_localCursor.dy * 65535).round();
               _bridge?.sendMouse(xn, yn, wheelY: wheelDelta);
             },
-            onDirectTouchTapNorm: (xn, yn) {
-              setState(() => _localCursor = Offset(xn / 65535.0, yn / 65535.0));
-              _bridge?.sendMouse(xn, yn, buttonMask: 0x01);
-              Future.delayed(const Duration(milliseconds: 25), () {
-                _bridge?.sendMouse(xn, yn, buttonMask: 0);
-              });
-            },
             onShortcutKey: (keycode, mod) {
               _bridge?.sendKey(keycode, isDown: true, modifiers: mod);
-              Future.delayed(const Duration(milliseconds: 25), () {
+              Future.delayed(const Duration(milliseconds: 28), () {
                 _bridge?.sendKey(keycode, isDown: false, modifiers: 0);
               });
             },
-            onGamepadUpdate: (buttons, lx, ly, rx, ry) {
-              _bridge?.sendGamepad(buttons: buttons, lx: lx, ly: ly, rx: rx, ry: ry);
+            onSendUnicodeText: (utf8Text) {
+              _bridge?.sendText(utf8Text);
+            },
+            onGamepadUpdate: (buttons, lx, ly, rx, ry, lt, rt) {
+              _bridge?.sendGamepad(
+                buttons: buttons,
+                lx: lx,
+                ly: ly,
+                rx: rx,
+                ry: ry,
+                lt: lt,
+                rt: rt,
+              );
             },
           ),
 
@@ -730,17 +777,88 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
                                 },
                               ),
 
+                              // System Audio Toggle (Mute / Unmute)
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                tooltip: _audioEnabled ? '关闭远端声音' : '开启远端声音',
+                                icon: Icon(
+                                  _audioEnabled ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+                                  size: 17,
+                                  color: _audioEnabled ? const Color(0xFF38EF7D) : Colors.white38,
+                                ),
+                                onPressed: () {
+                                  setState(() => _audioEnabled = !_audioEnabled);
+                                  _pushSessionOptions();
+                                },
+                              ),
+
+                              // Virtual Keyboard Toggle (Mobile IME & Special Keys)
+                              IconButton(
+                                visualDensity: VisualDensity.compact,
+                                tooltip: _keyboardVisible ? '收起虚拟键盘' : '打开虚拟键盘',
+                                icon: Icon(
+                                  Icons.keyboard_alt_rounded,
+                                  size: 17,
+                                  color: _keyboardVisible ? const Color(0xFF38EF7D) : Colors.white70,
+                                ),
+                                onPressed: () => setState(() => _keyboardVisible = !_keyboardVisible),
+                              ),
+
+                              // GPU Hardware Codec Selector
+                              PopupMenuButton<CodecPreference>(
+                                tooltip: '选择编解码方式 (GPU 硬解 / JPEG / 无损)',
+                                color: const Color(0xFF1A2232),
+                                onSelected: (val) {
+                                  setState(() => _codecPref = val);
+                                  _pushSessionOptions();
+                                },
+                                itemBuilder: (_) => CodecPreference.values
+                                    .map((c) => PopupMenuItem(
+                                          value: c,
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text(
+                                                c.shortLabel,
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.w600,
+                                                  color: c == _codecPref
+                                                      ? const Color(0xFF38EF7D)
+                                                      : Colors.white,
+                                                ),
+                                              ),
+                                              Text(
+                                                c.subtitle,
+                                                style: const TextStyle(fontSize: 11, color: Colors.white54),
+                                              ),
+                                            ],
+                                          ),
+                                        ))
+                                    .toList(),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.memory_rounded, size: 14, color: Colors.lightBlueAccent),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        _codecPref.shortLabel,
+                                        style: const TextStyle(fontSize: 12, color: Colors.lightBlueAccent),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+
                               // Bandwidth / Quality Mode Menu
                               PopupMenuButton<QualityPreset>(
                                 tooltip: '画质与带宽模式',
                                 color: const Color(0xFF1A2232),
                                 onSelected: (val) {
                                   setState(() => _preset = val);
-                                  _bridge?.setOptions(
-                                    preset: val,
-                                    privacyCurtain: _privacyCurtain,
-                                    monitorIndex: _selectedMonitor,
-                                  );
+                                  _pushSessionOptions();
                                 },
                                 itemBuilder: (_) => QualityPreset.values
                                     .map((p) => PopupMenuItem(

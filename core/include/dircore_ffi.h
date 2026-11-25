@@ -79,11 +79,13 @@ DIRCORE_API int32_t dir_node_copy_frame_ex(DirHandle handle,
 DIRCORE_API void dir_node_send_mouse_ex(DirHandle handle, uint16_t x_norm, uint16_t y_norm,
                                         int16_t dx, int16_t dy, uint8_t button_mask, int16_t wheel_y);
 DIRCORE_API void dir_node_send_key(DirHandle handle, uint16_t keycode, int32_t is_down, uint8_t modifiers);
+DIRCORE_API void dir_node_send_text(DirHandle handle, const char* utf8_text);
 DIRCORE_API void dir_node_send_gamepad(DirHandle handle, uint16_t buttons,
                                        int16_t lx, int16_t ly, int16_t rx, int16_t ry,
                                        uint8_t lt, uint8_t rt);
 DIRCORE_API void dir_node_set_options(DirHandle handle, uint8_t profile, uint8_t target_fps,
-                                      int32_t privacy_curtain, uint8_t monitor_index);
+                                      int32_t privacy_curtain, uint8_t monitor_index,
+                                      uint8_t codec_pref, int32_t audio_enabled);
 DIRCORE_API void dir_node_send_clipboard(DirHandle handle, const char* utf8_text);
 DIRCORE_API int32_t dir_node_send_file(DirHandle handle, const char* local_path, uint64_t file_id);
 

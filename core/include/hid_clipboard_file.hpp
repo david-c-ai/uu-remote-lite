@@ -1,5 +1,6 @@
 #pragma once
 
+#include "keymap_hal.hpp"
 #include "wire_proto.hpp"
 #include <array>
 #include <cstdint>
@@ -16,27 +17,38 @@ public:
     explicit InputDispatcher(bool enable_os_injection = false);
 
     void SetOsInjectionEnabled(bool enabled) { enable_os_injection_ = enabled; }
+    void SetPeerOsType(HostOsType peer_os) { peer_os_ = peer_os; }
+    HostOsType PeerOsType() const { return peer_os_; }
     void SetDisplayBounds(uint16_t width, uint16_t height, int32_t origin_x = 0, int32_t origin_y = 0);
     void ApplyMouse(const PayloadMouseEvent& ev);
     void ApplyKey(const PayloadKeyInput& ev);
+    void ApplyUnicodeText(const std::string& utf8_text);
     void ApplyGamepad(const PayloadGamepad& pad);
 
     // Releases any depressed keys on session teardown so host keyboard never gets stuck!
     void ReleaseAllHeldKeys();
 
     uint64_t InjectedEventCount() const { return injected_count_; }
+    uint64_t InjectedTextCount() const { return injected_text_count_; }
+    const std::string& LastUnicodeText() const { return last_unicode_text_; }
     PayloadGamepad LastGamepadState() const { return last_pad_; }
 
 private:
+    void SetGamepadKey(uint16_t dir_key, bool want_down);
+
     bool enable_os_injection_ = false;
+    HostOsType peer_os_ = HostOsType::kUnknown;
     int32_t origin_x_ = 0;
     int32_t origin_y_ = 0;
     uint16_t display_w_ = 1920;
     uint16_t display_h_ = 1080;
     uint8_t prev_buttons_ = 0;
     uint64_t injected_count_ = 0;
+    uint64_t injected_text_count_ = 0;
+    std::string last_unicode_text_;
     PayloadGamepad last_pad_{};
     std::unordered_set<uint16_t> held_keys_;
+    std::unordered_set<uint16_t> pad_held_keys_;
 };
 
 class ResumableFileEngine {

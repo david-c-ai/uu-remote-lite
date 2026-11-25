@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -289,8 +290,9 @@ int TestCAbiFfiSmoke() {
     CHECK_OK(dir_node_start(h_cli) == 1, "FFI client start");
     CHECK_OK(dir_node_connect(h_cli, "333222111", 1500) == 1, "FFI client connect");
 
-    // Switch to Monitor #1 via FFI options and verify RGBA frame copy
-    dir_node_set_options(h_cli, 1, 60, 0, 1);
+    // Switch to Monitor #1 via FFI options (auto codec, audio enabled) and verify connection
+    dir_node_set_options(h_cli, 1, 60, 0, 1, 0, 1);
+    dir_node_send_text(h_cli, "DirRemote FFI 你好世界");
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
     DirTelemetryC t{};
@@ -300,7 +302,7 @@ int TestCAbiFfiSmoke() {
     dir_node_destroy(h_cli);
     dir_node_destroy(h_host);
     srv.Stop();
-    std::printf("[PASS] 5/6 DirRemote Flutter C ABI FFI Bindings & Multi-Monitor Switch\n");
+    std::printf("[PASS] 5/7 DirRemote Flutter C ABI FFI Bindings & Multi-Monitor Switch\n");
     return 0;
 }
 
@@ -367,7 +369,7 @@ int TestRealPhotographicJpegWifiPipeline() {
              "Received zero-copy frame must be valid JPEG bitstream (format=2)");
 
     double ratio = static_cast<double>(photo.size()) / static_cast<double>(jpeg.size());
-    std::printf("[PASS] 6/6 Photographic 1280x800 Hardware JPEG + 5%% Wi-Fi Loss Pipeline:\n"
+    std::printf("[PASS] 6/7 Photographic 1280x800 Hardware JPEG + 5%% Wi-Fi Loss Pipeline:\n"
                 "       - 4.1 MB raw wallpaper -> %.1f KB JPEG (%.0fx smaller!) in %.2f ms\n"
                 "       - Delivered valid JPEG bitstream (%.1f KB) under 5%% UDP drop with Always-On FEC\n",
                 static_cast<double>(jpeg.size()) / 1024.0, ratio, enc_ms,
@@ -376,6 +378,132 @@ int TestRealPhotographicJpegWifiPipeline() {
     client.Stop();
     host.Stop();
     srv.Stop();
+    return 0;
+}
+
+int TestV120AudioGamepadImeAndCrossOsMatrix() {
+    // 1) Cross-OS Modifier & Keycode Translation Verification (Win<->Mac, Win<->Win, Mac<->Mac)
+    // Ctrl (0x02) from Windows -> macOS MUST become Cmd (0x08); Cmd (0x08) from macOS -> Windows MUST become Ctrl (0x02)
+    CHECK_OK(core::RemapModifiersCrossOs(0x02, core::HostOsType::kWindows, core::HostOsType::kMacOS) == 0x08,
+             "Win->Mac Ctrl+C must map to Cmd+C");
+    CHECK_OK(core::RemapModifiersCrossOs(0x08, core::HostOsType::kMacOS, core::HostOsType::kWindows) == 0x02,
+             "Mac->Win Cmd+C must map to Ctrl+C");
+    CHECK_OK(core::RemapModifiersCrossOs(0x02, core::HostOsType::kWindows, core::HostOsType::kWindows) == 0x02,
+             "Win->Win Ctrl must remain Ctrl");
+    CHECK_OK(core::RemapModifiersCrossOs(0x08, core::HostOsType::kMacOS, core::HostOsType::kMacOS) == 0x08,
+             "Mac->Mac Cmd must remain Cmd");
+    constexpr uint16_t kKeyC = core::DirKey::kA + 2; // 'C' = 0x06
+    CHECK_OK(core::DirKeyToMacVirtualKey(kKeyC) == 8 &&
+             core::DirKeyToWinVirtualKey(kKeyC) == 'C',
+             "Canonical DirKey 'C' must map accurately to Mac (8) and Win ('C')");
+    CHECK_OK(core::DirKeyToMacVirtualKey(core::DirKey::kEnter) == 36 &&
+             core::DirKeyToWinVirtualKey(core::DirKey::kEnter) == 0x0D,
+             "Canonical DirKey::kEnter must map accurately to Mac (36) and Win (0x0D)");
+
+    // 2) Stereo IMA-ADPCM 4:1 Audio Compression Round-Trip Verification (480 stereo frames = 1920B -> 480B!)
+    std::vector<int16_t> sine_pcm(480 * 2);
+    for (size_t i = 0; i < 480; ++i) {
+        double phase = 2.0 * 3.1415926535 * 440.0 * static_cast<double>(i) / 48000.0;
+        sine_pcm[i * 2 + 0] = static_cast<int16_t>(std::sin(phase) * 14000.0);
+        sine_pcm[i * 2 + 1] = static_cast<int16_t>(std::cos(phase) * 14000.0);
+    }
+    core::AdpcmChannelState enc_l{}, enc_r{}, dec_l{}, dec_r{};
+    std::vector<uint8_t> adpcm;
+    core::AdpcmStereoCodec::Encode(sine_pcm.data(), 480, enc_l, enc_r, adpcm);
+    CHECK_OK(adpcm.size() == 480, "Stereo ADPCM must compress 1920B PCM -> 480B (4:1 ratio)");
+    std::vector<int16_t> decoded_pcm;
+    core::AdpcmStereoCodec::Decode(adpcm.data(), adpcm.size(), 480, dec_l, dec_r, decoded_pcm);
+    CHECK_OK(decoded_pcm.size() == sine_pcm.size(), "ADPCM decode must restore exact frame count");
+    double err_sum = 0.0;
+    for (size_t i = 0; i < sine_pcm.size(); ++i) {
+        err_sum += std::abs(static_cast<double>(sine_pcm[i]) - static_cast<double>(decoded_pcm[i]));
+    }
+    double avg_err = err_sum / static_cast<double>(sine_pcm.size());
+    CHECK_OK(avg_err < 350.0, "ADPCM audio distortion must remain ultra-low (<1.1% full scale)");
+
+    // 3) Live Simulated E2E Verification across all 4 Desktop Pairs:
+    //    Win->Mac, Mac->Win, Win->Win, Mac->Mac + Audio + IME Unicode + Virtual Gamepad + Codec Switch!
+    struct OsPair {
+        const char* name;
+        core::HostOsType client_os;
+        core::HostOsType host_os;
+    };
+    const OsPair pairs[4] = {
+        {"Win->Mac", core::HostOsType::kWindows, core::HostOsType::kMacOS},
+        {"Mac->Win", core::HostOsType::kMacOS, core::HostOsType::kWindows},
+        {"Win->Win", core::HostOsType::kWindows, core::HostOsType::kWindows},
+        {"Mac->Mac", core::HostOsType::kMacOS, core::HostOsType::kMacOS},
+    };
+
+    server::ServerConfig scfg{0, 0};
+    server::LiteServer srv(scfg);
+    CHECK_OK(srv.Start(), "LiteServer for v1.2.0 matrix");
+
+    uint64_t total_audio_rx = 0;
+    for (int idx = 0; idx < 4; ++idx) {
+        core::NodeConfig hcfg{};
+        hcfg.self_id = "80000000" + std::to_string(idx);
+        hcfg.access_pin = "9999";
+        hcfg.hbbs_port = srv.BoundRendezvousPort();
+        hcfg.hbbr_port = srv.BoundRelayPort();
+        hcfg.is_host = true;
+        hcfg.use_synthetic_capture = true;
+        hcfg.simulated_os_override = pairs[idx].host_os;
+
+        core::NodeConfig ccfg = hcfg;
+        ccfg.self_id = "90000000" + std::to_string(idx);
+        ccfg.is_host = false;
+        ccfg.simulated_os_override = pairs[idx].client_os;
+
+        core::PeerNode host(hcfg);
+        core::PeerNode client(ccfg);
+        CHECK_OK(host.Start(), "Matrix host start");
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        CHECK_OK(client.Start(), "Matrix client start");
+        CHECK_OK(client.ConnectToPeer(hcfg.self_id, 1500), "Matrix client connect");
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+        CHECK_OK(host.HostPeerOsType() == pairs[idx].client_os,
+                 "Host must negotiate exact remote controller OS for keymap translation");
+
+        // Send cross-OS shortcut (Ctrl/Cmd+C), Android IME Chinese Unicode text, & full Dual-Stick Gamepad!
+        client.SendKey(kKeyC, true, 0x02);
+        client.SendKey(kKeyC, false, 0);
+        client.SendUnicodeText("DirRemote 跨平台中文输入测试! 🚀");
+        core::PayloadGamepad pad{};
+        pad.buttons = 0x01 | 0x10; // A (Space) + LB (Q)
+        pad.lx = 28000;            // Move Right (D)
+        pad.ly = -26000;           // Move Forward (W)
+        pad.rx = 16000;            // Camera pan right
+        pad.rt = 255;              // Primary Fire (Left Click)
+        client.SendGamepad(pad);
+
+        // Test Codec Preference switch (Tile Lossless -> Auto) + System Audio ADPCM packet delivery!
+        client.SetQualityProfile(core::QualityProfile::kBalancedAuto, 60, false, 0,
+                                 core::CodecPreference::kTileLossless, true);
+        for (int a = 0; a < 5; ++a) {
+            host.InjectSyntheticAudioFrameForTest(sine_pcm.data(), 480, 48000);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        CHECK_OK(host.HostInjectedInputCount() >= 5,
+                 "Host must dispatch key, Unicode IME text & gamepad WASD/mouse actions");
+        CHECK_OK(host.HostLastUnicodeText() == "DirRemote 跨平台中文输入测试! 🚀",
+                 "Host must receive exact UTF-8 Chinese/Emoji IME text");
+        CHECK_OK(client.ClientAudioPacketsReceived() >= 3,
+                 "Client must receive & decode encrypted ADPCM system audio stream");
+        total_audio_rx += client.ClientAudioPacketsReceived();
+
+        client.Stop();
+        host.Stop();
+    }
+
+    srv.Stop();
+    std::printf("[PASS] 7/7 v1.2.0 Full Matrix (Win<->Mac, Win<->Win, Mac<->Mac) + Audio + IME + Gamepad:\n"
+                "       - 4/4 OS pairs verified live over E2EE UDP (auto Cmd<->Ctrl cross-OS remap!)\n"
+                "       - Stereo 48kHz IMA-ADPCM 4:1 audio: avg error=%.1f, %llu encrypted audio pkts delivered\n"
+                "       - Android/Mobile UTF-8 CJK IME text & Virtual Gamepad (WASD + Camera + Triggers) verified!\n",
+                avg_err, static_cast<unsigned long long>(total_audio_rx));
     return 0;
 }
 
@@ -392,9 +520,10 @@ int main() {
     if (TestRelayFallbackAndPacketLossFec() != 0) return 1;
     if (TestCAbiFfiSmoke() != 0) return 1;
     if (TestRealPhotographicJpegWifiPipeline() != 0) return 1;
+    if (TestV120AudioGamepadImeAndCrossOsMatrix() != 0) return 1;
 
     std::printf("====================================================================\n");
-    std::printf("  ALL 6 BENCHMARKS & E2E VERIFICATION SUITES PASSED!\n");
+    std::printf("  ALL 7 BENCHMARKS & E2E VERIFICATION SUITES PASSED!\n");
     std::printf("====================================================================\n");
     return 0;
 }

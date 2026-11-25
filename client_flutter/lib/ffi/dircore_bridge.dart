@@ -95,13 +95,16 @@ typedef _SendMouseExDart = void Function(ffi.Pointer<ffi.Void>, int, int, int, i
 typedef _SendKeyNative = ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Uint16, ffi.Int32, ffi.Uint8);
 typedef _SendKeyDart = void Function(ffi.Pointer<ffi.Void>, int, int, int);
 
+typedef _SendTextNative = ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
+typedef _SendTextDart = void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
+
 typedef _SendGamepadNative = ffi.Void Function(
     ffi.Pointer<ffi.Void>, ffi.Uint16, ffi.Int16, ffi.Int16, ffi.Int16, ffi.Int16, ffi.Uint8, ffi.Uint8);
 typedef _SendGamepadDart = void Function(ffi.Pointer<ffi.Void>, int, int, int, int, int, int, int);
 
 typedef _SetOptionsNative = ffi.Void Function(
-    ffi.Pointer<ffi.Void>, ffi.Uint8, ffi.Uint8, ffi.Int32, ffi.Uint8);
-typedef _SetOptionsDart = void Function(ffi.Pointer<ffi.Void>, int, int, int, int);
+    ffi.Pointer<ffi.Void>, ffi.Uint8, ffi.Uint8, ffi.Int32, ffi.Uint8, ffi.Uint8, ffi.Int32);
+typedef _SetOptionsDart = void Function(ffi.Pointer<ffi.Void>, int, int, int, int, int, int);
 
 typedef _SendClipboardNative = ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
 typedef _SendClipboardDart = void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
@@ -120,6 +123,7 @@ class DirCoreBridge {
     _copyFrameEx = _lib.lookupFunction<_CopyFrameExNative, _CopyFrameExDart>('dir_node_copy_frame_ex');
     _sendMouseEx = _lib.lookupFunction<_SendMouseExNative, _SendMouseExDart>('dir_node_send_mouse_ex');
     _sendKey = _lib.lookupFunction<_SendKeyNative, _SendKeyDart>('dir_node_send_key');
+    _sendText = _lib.lookupFunction<_SendTextNative, _SendTextDart>('dir_node_send_text');
     _sendGamepad = _lib.lookupFunction<_SendGamepadNative, _SendGamepadDart>('dir_node_send_gamepad');
     _setOptions = _lib.lookupFunction<_SetOptionsNative, _SetOptionsDart>('dir_node_set_options');
     _sendClipboard = _lib.lookupFunction<_SendClipboardNative, _SendClipboardDart>('dir_node_send_clipboard');
@@ -178,6 +182,7 @@ class DirCoreBridge {
   late final _CopyFrameExDart _copyFrameEx;
   late final _SendMouseExDart _sendMouseEx;
   late final _SendKeyDart _sendKey;
+  late final _SendTextDart _sendText;
   late final _SendGamepadDart _sendGamepad;
   late final _SetOptionsDart _setOptions;
   late final _SendClipboardDart _sendClipboard;
@@ -309,6 +314,16 @@ class DirCoreBridge {
     }
   }
 
+  void sendText(String utf8Text) {
+    if (_handle == ffi.nullptr || utf8Text.isEmpty) return;
+    final p = utf8Text.toNativeUtf8();
+    try {
+      _sendText(_handle, p);
+    } finally {
+      calloc.free(p);
+    }
+  }
+
   void sendGamepad({
     required int buttons,
     int lx = 0,
@@ -327,6 +342,8 @@ class DirCoreBridge {
     required QualityPreset preset,
     required bool privacyCurtain,
     required int monitorIndex,
+    CodecPreference codecPreference = CodecPreference.auto,
+    bool audioEnabled = true,
   }) {
     if (_handle != ffi.nullptr) {
       _setOptions(
@@ -335,6 +352,8 @@ class DirCoreBridge {
         preset.defaultFps,
         privacyCurtain ? 1 : 0,
         monitorIndex.clamp(0, 15),
+        codecPreference.code,
+        audioEnabled ? 1 : 0,
       );
     }
   }

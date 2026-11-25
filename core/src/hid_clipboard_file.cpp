@@ -44,6 +44,15 @@ void InputDispatcher::ApplyMouse(const PayloadMouseEvent& ev) {
 #if defined(__APPLE__) && TARGET_OS_OSX
     double px = static_cast<double>(origin_x_) + (static_cast<double>(ev.x_norm) / 65535.0) * display_w_;
     double py = static_cast<double>(origin_y_) + (static_cast<double>(ev.y_norm) / 65535.0) * display_h_;
+    if (ev.is_relative && (ev.dx != 0 || ev.dy != 0)) {
+        CGEventRef cur_ev = CGEventCreate(nullptr);
+        if (cur_ev) {
+            CGPoint cur_pt = CGEventGetLocation(cur_ev);
+            CFRelease(cur_ev);
+            px = cur_pt.x + ev.dx;
+            py = cur_pt.y + ev.dy;
+        }
+    }
     CGPoint pt = CGPointMake(px, py);
 
     auto post_btn = [&](CGEventType type, CGMouseButton btn) {
@@ -110,6 +119,49 @@ void InputDispatcher::ApplyMouse(const PayloadMouseEvent& ev) {
 #endif
 }
 
+namespace {
+
+std::vector<uint16_t> Utf8ToUtf16(const std::string& utf8) {
+    std::vector<uint16_t> out;
+    size_t i = 0;
+    while (i < utf8.size()) {
+        uint32_t cp = 0;
+        uint8_t c = static_cast<uint8_t>(utf8[i]);
+        if (c < 0x80) {
+            cp = c;
+            i += 1;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < utf8.size()) {
+            cp = ((c & 0x1F) << 6) | (static_cast<uint8_t>(utf8[i + 1]) & 0x3F);
+            i += 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < utf8.size()) {
+            cp = ((c & 0x0F) << 12) |
+                 ((static_cast<uint8_t>(utf8[i + 1]) & 0x3F) << 6) |
+                 (static_cast<uint8_t>(utf8[i + 2]) & 0x3F);
+            i += 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < utf8.size()) {
+            cp = ((c & 0x07) << 18) |
+                 ((static_cast<uint8_t>(utf8[i + 1]) & 0x3F) << 12) |
+                 ((static_cast<uint8_t>(utf8[i + 2]) & 0x3F) << 6) |
+                 (static_cast<uint8_t>(utf8[i + 3]) & 0x3F);
+            i += 4;
+        } else {
+            i += 1;
+            continue;
+        }
+
+        if (cp <= 0xFFFF) {
+            out.push_back(static_cast<uint16_t>(cp));
+        } else if (cp <= 0x10FFFF) {
+            cp -= 0x10000;
+            out.push_back(static_cast<uint16_t>(0xD800 + (cp >> 10)));
+            out.push_back(static_cast<uint16_t>(0xDC00 + (cp & 0x3FF)));
+        }
+    }
+    return out;
+}
+
+} // namespace
+
 void InputDispatcher::ApplyKey(const PayloadKeyInput& ev) {
     ++injected_count_;
     if (ev.is_down) {
@@ -119,24 +171,145 @@ void InputDispatcher::ApplyKey(const PayloadKeyInput& ev) {
     }
     if (!enable_os_injection_) return;
 
+    uint8_t mods = RemapModifiersCrossOs(ev.modifiers, peer_os_, LocalOsType());
+
 #if defined(__APPLE__) && TARGET_OS_OSX
+    uint16_t mac_vk = DirKeyToMacVirtualKey(ev.keycode);
+    if (mac_vk == 0xFFFF) return;
     CGEventRef kev = CGEventCreateKeyboardEvent(
-        nullptr, static_cast<CGKeyCode>(ev.keycode), ev.is_down != 0);
+        nullptr, static_cast<CGKeyCode>(mac_vk), ev.is_down != 0);
     if (kev) {
+        CGEventFlags flags = 0;
+        if (mods & kModShift) flags |= kCGEventFlagMaskShift;
+        if (mods & kModCtrl)  flags |= kCGEventFlagMaskControl;
+        if (mods & kModAlt)   flags |= kCGEventFlagMaskAlternate;
+        if (mods & kModMeta)  flags |= kCGEventFlagMaskCommand;
+        if (flags != 0) {
+            CGEventSetFlags(kev, flags);
+        }
         CGEventPost(kCGHIDEventTap, kev);
         CFRelease(kev);
     }
 #elif defined(_WIN32)
-    INPUT inp{};
-    inp.type = INPUT_KEYBOARD;
-    inp.ki.wVk = ev.keycode;
-    inp.ki.dwFlags = ev.is_down ? 0 : KEYEVENTF_KEYUP;
-    SendInput(1, &inp, sizeof(INPUT));
+    uint16_t win_vk = DirKeyToWinVirtualKey(ev.keycode);
+    if (win_vk == 0) return;
+
+    auto send_vk = [](WORD vk, bool down) {
+        INPUT inp{};
+        inp.type = INPUT_KEYBOARD;
+        inp.ki.wVk = vk;
+        inp.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+        SendInput(1, &inp, sizeof(INPUT));
+    };
+
+    if (ev.is_down) {
+        if (mods & kModShift) send_vk(VK_SHIFT, true);
+        if (mods & kModCtrl)  send_vk(VK_CONTROL, true);
+        if (mods & kModAlt)   send_vk(VK_MENU, true);
+        if (mods & kModMeta)  send_vk(VK_LWIN, true);
+        send_vk(static_cast<WORD>(win_vk), true);
+    } else {
+        send_vk(static_cast<WORD>(win_vk), false);
+        if (mods & kModMeta)  send_vk(VK_LWIN, false);
+        if (mods & kModAlt)   send_vk(VK_MENU, false);
+        if (mods & kModCtrl)  send_vk(VK_CONTROL, false);
+        if (mods & kModShift) send_vk(VK_SHIFT, false);
+    }
 #endif
+}
+
+void InputDispatcher::ApplyUnicodeText(const std::string& utf8_text) {
+    if (utf8_text.empty()) return;
+    ++injected_count_;
+    ++injected_text_count_;
+    last_unicode_text_ = utf8_text;
+    if (!enable_os_injection_) return;
+
+    auto utf16 = Utf8ToUtf16(utf8_text);
+    if (utf16.empty()) return;
+
+#if defined(__APPLE__) && TARGET_OS_OSX
+    for (uint16_t ch : utf16) {
+        UniChar uc = static_cast<UniChar>(ch);
+        CGEventRef down = CGEventCreateKeyboardEvent(nullptr, 0, true);
+        CGEventRef up = CGEventCreateKeyboardEvent(nullptr, 0, false);
+        if (down && up) {
+            CGEventKeyboardSetUnicodeString(down, 1, &uc);
+            CGEventKeyboardSetUnicodeString(up, 1, &uc);
+            CGEventPost(kCGHIDEventTap, down);
+            CGEventPost(kCGHIDEventTap, up);
+        }
+        if (down) CFRelease(down);
+        if (up) CFRelease(up);
+    }
+#elif defined(_WIN32)
+    std::vector<INPUT> batch;
+    batch.reserve(utf16.size() * 2);
+    for (uint16_t ch : utf16) {
+        INPUT dn{};
+        dn.type = INPUT_KEYBOARD;
+        dn.ki.wScan = ch;
+        dn.ki.dwFlags = KEYEVENTF_UNICODE;
+        batch.push_back(dn);
+
+        INPUT up = dn;
+        up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        batch.push_back(up);
+    }
+    if (!batch.empty()) {
+        SendInput(static_cast<UINT>(batch.size()), batch.data(), sizeof(INPUT));
+    }
+#endif
+}
+
+void InputDispatcher::SetGamepadKey(uint16_t dir_key, bool want_down) {
+    bool is_held = pad_held_keys_.count(dir_key) > 0;
+    if (want_down && !is_held) {
+        pad_held_keys_.insert(dir_key);
+        ApplyKey(PayloadKeyInput{dir_key, 1, 0});
+    } else if (!want_down && is_held) {
+        pad_held_keys_.erase(dir_key);
+        ApplyKey(PayloadKeyInput{dir_key, 0, 0});
+    }
 }
 
 void InputDispatcher::ApplyGamepad(const PayloadGamepad& pad) {
     ++injected_count_;
+
+    // Universal driver-free Gamepad -> Keyboard/Mouse mapping (works immediately on both macOS & Windows!)
+    constexpr int16_t kDeadzone = 8000;
+    // Left stick -> W / A / S / D movement
+    SetGamepadKey(0x1A /* W */, pad.ly < -kDeadzone);
+    SetGamepadKey(0x16 /* S */, pad.ly >  kDeadzone);
+    SetGamepadKey(0x04 /* A */, pad.lx < -kDeadzone);
+    SetGamepadKey(0x07 /* D */, pad.lx >  kDeadzone);
+
+    // Face & Shoulder Buttons -> Space (A), Escape (B), E (X), F (Y), Q (LB), R (RB)
+    SetGamepadKey(DirKey::kSpace,  (pad.buttons & 0x01) != 0);
+    SetGamepadKey(DirKey::kEscape, (pad.buttons & 0x02) != 0);
+    SetGamepadKey(0x08 /* E */,    (pad.buttons & 0x04) != 0);
+    SetGamepadKey(0x09 /* F */,    (pad.buttons & 0x08) != 0);
+    SetGamepadKey(0x14 /* Q */,    (pad.buttons & 0x10) != 0);
+    SetGamepadKey(0x15 /* R */,    (pad.buttons & 0x20) != 0);
+
+    // Right stick -> smooth relative mouse camera look + LT/RT -> Right/Left mouse triggers
+    bool lt_down = pad.lt > 128;
+    bool rt_down = pad.rt > 128;
+    bool prev_lt = last_pad_.lt > 128;
+    bool prev_rt = last_pad_.rt > 128;
+
+    int16_t rx_delta = (pad.rx > kDeadzone || pad.rx < -kDeadzone) ? static_cast<int16_t>(pad.rx / 1800) : 0;
+    int16_t ry_delta = (pad.ry > kDeadzone || pad.ry < -kDeadzone) ? static_cast<int16_t>(pad.ry / 1800) : 0;
+
+    if (rx_delta != 0 || ry_delta != 0 || lt_down != prev_lt || rt_down != prev_rt) {
+        PayloadMouseEvent mev{};
+        mev.dx = rx_delta;
+        mev.dy = ry_delta;
+        mev.is_relative = 1;
+        mev.button_mask = static_cast<uint8_t>((rt_down ? 0x01 : 0) | (lt_down ? 0x02 : 0));
+        ApplyMouse(mev);
+    }
+
     last_pad_ = pad;
 }
 
@@ -147,6 +320,7 @@ void InputDispatcher::ReleaseAllHeldKeys() {
         ApplyKey(rel);
     }
     held_keys_.clear();
+    pad_held_keys_.clear();
 }
 
 // --- Resumable Chunked File Transfer & Compressed Clipboard ---

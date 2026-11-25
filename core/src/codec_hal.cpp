@@ -12,6 +12,9 @@
 #include <ImageIO/ImageIO.h>
 #include <VideoToolbox/VideoToolbox.h>
 #include <compression.h>
+#elif defined(__ANDROID__)
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaFormat.h>
 #elif defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -609,6 +612,209 @@ private:
     std::vector<uint8_t> decoded_bgra_;
     bool decoded_ok_ = false;
 };
+#elif defined(__ANDROID__)
+class AndroidHevcDecoder {
+public:
+    ~AndroidHevcDecoder() { Reset(); }
+
+    void Reset() {
+        if (codec_) {
+            AMediaCodec_stop(codec_);
+            AMediaCodec_delete(codec_);
+            codec_ = nullptr;
+        }
+        w_ = 0;
+        h_ = 0;
+        stride_ = 0;
+        slice_h_ = 0;
+        color_fmt_ = 21;
+    }
+
+    bool DecodeFrame(const uint8_t* data, size_t len, uint16_t width, uint16_t height,
+                     std::vector<uint8_t>& out_bgra) {
+        if (len < 5) return false;
+        size_t pos = 0;
+        uint8_t has_params = data[pos++];
+
+        std::vector<uint8_t> csd;
+        if (has_params == 1) {
+            if (pos >= len) return false;
+            uint8_t count = data[pos++];
+            for (uint8_t i = 0; i < count; ++i) {
+                if (pos + 2 > len) return false;
+                uint16_t sz = ReadU16LE(data + pos);
+                pos += 2;
+                if (pos + sz > len) return false;
+                if (sz > 0) {
+                    csd.push_back(0x00);
+                    csd.push_back(0x00);
+                    csd.push_back(0x00);
+                    csd.push_back(0x01);
+                    csd.insert(csd.end(), data + pos, data + pos + sz);
+                }
+                pos += sz;
+            }
+            if (!csd.empty() && (!codec_ || w_ != width || h_ != height)) {
+                if (!InitDecoder(width, height, csd)) return false;
+            }
+        }
+
+        if (!codec_ || pos + 4 > len) return false;
+        uint32_t sample_len = ReadU32LE(data + pos);
+        pos += 4;
+        if (pos + sample_len > len || sample_len == 0) return false;
+
+        // Convert 4-byte length-prefixed HVCC NALUs -> Annex-B (00 00 00 01)
+        std::vector<uint8_t> annexb;
+        annexb.reserve(sample_len + 64);
+        size_t cur = pos;
+        size_t end = pos + sample_len;
+        while (cur + 4 <= end) {
+            uint32_t nalu_len = (static_cast<uint32_t>(data[cur]) << 24) |
+                                (static_cast<uint32_t>(data[cur + 1]) << 16) |
+                                (static_cast<uint32_t>(data[cur + 2]) << 8) |
+                                static_cast<uint32_t>(data[cur + 3]);
+            cur += 4;
+            if (nalu_len == 0 || cur + nalu_len > end) break;
+            annexb.push_back(0x00);
+            annexb.push_back(0x00);
+            annexb.push_back(0x00);
+            annexb.push_back(0x01);
+            annexb.insert(annexb.end(), data + cur, data + cur + nalu_len);
+            cur += nalu_len;
+        }
+        if (annexb.empty()) return false;
+
+        ssize_t in_idx = AMediaCodec_dequeueInputBuffer(codec_, 12000);
+        if (in_idx < 0) return false;
+        size_t in_sz = 0;
+        uint8_t* in_buf = AMediaCodec_getInputBuffer(codec_, static_cast<size_t>(in_idx), &in_sz);
+        if (!in_buf || in_sz < annexb.size()) {
+            AMediaCodec_queueInputBuffer(codec_, static_cast<size_t>(in_idx), 0, 0, 0, 0);
+            return false;
+        }
+        std::memcpy(in_buf, annexb.data(), annexb.size());
+        AMediaCodec_queueInputBuffer(codec_, static_cast<size_t>(in_idx), 0, annexb.size(),
+                                     pts_us_, 0);
+        pts_us_ += 16667;
+
+        AMediaCodecBufferInfo info{};
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            ssize_t out_idx = AMediaCodec_dequeueOutputBuffer(codec_, &info, 8000);
+            if (out_idx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+                AMediaFormat* fmt = AMediaCodec_getOutputFormat(codec_);
+                if (fmt) {
+                    int32_t v = 0;
+                    if (AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_STRIDE, &v) && v > 0) stride_ = v;
+                    if (AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) && v > 0) slice_h_ = v;
+                    if (AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, &v)) color_fmt_ = v;
+                    AMediaFormat_delete(fmt);
+                }
+                continue;
+            }
+            if (out_idx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
+                continue;
+            }
+            if (out_idx >= 0) {
+                size_t out_sz = 0;
+                uint8_t* out_buf = AMediaCodec_getOutputBuffer(codec_, static_cast<size_t>(out_idx), &out_sz);
+                bool ok = false;
+                if (out_buf && info.size > 0) {
+                    ok = ConvertYuv420ToBgra(out_buf + info.offset, static_cast<size_t>(info.size),
+                                             width, height, out_bgra);
+                }
+                AMediaCodec_releaseOutputBuffer(codec_, static_cast<size_t>(out_idx), false);
+                return ok;
+            }
+            break;
+        }
+        return false;
+    }
+
+private:
+    bool InitDecoder(uint16_t width, uint16_t height, const std::vector<uint8_t>& csd) {
+        Reset();
+        codec_ = AMediaCodec_createDecoderByType("video/hevc");
+        if (!codec_) return false;
+
+        AMediaFormat* fmt = AMediaFormat_new();
+        AMediaFormat_setString(fmt, AMEDIAFORMAT_KEY_MIME, "video/hevc");
+        AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_WIDTH, width);
+        AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_HEIGHT, height);
+        AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, 21); // COLOR_FormatYUV420SemiPlanar (NV12)
+        AMediaFormat_setBuffer(fmt, "csd-0", csd.data(), csd.size());
+
+        media_status_t st = AMediaCodec_configure(codec_, fmt, nullptr, nullptr, 0);
+        AMediaFormat_delete(fmt);
+        if (st != AMEDIA_OK) {
+            Reset();
+            return false;
+        }
+        if (AMediaCodec_start(codec_) != AMEDIA_OK) {
+            Reset();
+            return false;
+        }
+        w_ = width;
+        h_ = height;
+        stride_ = width;
+        slice_h_ = height;
+        return true;
+    }
+
+    bool ConvertYuv420ToBgra(const uint8_t* yuv, size_t yuv_len, uint16_t w, uint16_t h,
+                             std::vector<uint8_t>& out_bgra) const {
+        const size_t y_stride = stride_ >= w ? static_cast<size_t>(stride_) : w;
+        const size_t y_plane_h = slice_h_ >= h ? static_cast<size_t>(slice_h_) : h;
+        const size_t uv_offset = y_stride * y_plane_h;
+        if (uv_offset + (y_stride * (h / 2)) > yuv_len) return false;
+
+        const bool is_planar_i420 = (color_fmt_ == 19);
+        const uint8_t* y_ptr = yuv;
+        const uint8_t* uv_ptr = yuv + uv_offset;
+        const size_t u_stride = y_stride / 2;
+        const uint8_t* v_ptr = uv_ptr + u_stride * (y_plane_h / 2);
+
+        out_bgra.resize(static_cast<size_t>(w) * h * 4);
+        uint8_t* dst = out_bgra.data();
+
+        for (uint16_t y = 0; y < h; ++y) {
+            const uint8_t* y_row = y_ptr + static_cast<size_t>(y) * y_stride;
+            const size_t cy = y >> 1;
+            uint8_t* out_row = dst + static_cast<size_t>(y) * w * 4;
+            for (uint16_t x = 0; x < w; ++x) {
+                int Y = static_cast<int>(y_row[x]) - 16;
+                if (Y < 0) Y = 0;
+                int U = 0;
+                int V = 0;
+                if (is_planar_i420) {
+                    U = static_cast<int>(uv_ptr[cy * u_stride + (x >> 1)]) - 128;
+                    V = static_cast<int>(v_ptr[cy * u_stride + (x >> 1)]) - 128;
+                } else {
+                    size_t uv_idx = cy * y_stride + (x & ~1u);
+                    U = static_cast<int>(uv_ptr[uv_idx]) - 128;
+                    V = static_cast<int>(uv_ptr[uv_idx + 1]) - 128;
+                }
+                int C = 298 * Y;
+                int R = (C + 409 * V + 128) >> 8;
+                int G = (C - 100 * U - 208 * V + 128) >> 8;
+                int B = (C + 516 * U + 128) >> 8;
+                out_row[x * 4 + 0] = static_cast<uint8_t>(std::clamp(B, 0, 255));
+                out_row[x * 4 + 1] = static_cast<uint8_t>(std::clamp(G, 0, 255));
+                out_row[x * 4 + 2] = static_cast<uint8_t>(std::clamp(R, 0, 255));
+                out_row[x * 4 + 3] = 255;
+            }
+        }
+        return true;
+    }
+
+    AMediaCodec* codec_ = nullptr;
+    uint16_t w_ = 0;
+    uint16_t h_ = 0;
+    int32_t stride_ = 0;
+    int32_t slice_h_ = 0;
+    int32_t color_fmt_ = 21;
+    uint64_t pts_us_ = 0;
+};
 #endif
 
 // --- Hybrid Smart Video Encoder & Decoder (Hardware HEVC + Narrowband Dirty-Tile LZ4) ---
@@ -631,6 +837,10 @@ public:
         peer_supports_jpeg_ = supported;
     }
 
+    void SetCodecPreference(CodecPreference pref) override {
+        codec_pref_ = pref;
+    }
+
     bool Encode(const CapturedFrame& frame,
                 uint32_t target_bitrate_kbps,
                 bool force_keyframe,
@@ -649,29 +859,18 @@ public:
             return true;
         }
 
-        // Universal Real-Desktop Hardware JPEG Path (Apple ImageIO / Windows WIC):
-        // Compresses 4.1MB colorful photographic 1280x800 screen -> ~45KB (~48 UDP packets!) in ~4ms!
-        if (peer_supports_jpeg_) {
-            float q = 0.62f;
-            if (target_bitrate_kbps <= 800) {
-                q = 0.42f;
-            } else if (target_bitrate_kbps >= 12000) {
-                q = 0.78f;
-            }
-            if (EncodeHardwareJpeg(frame.bgra.data(), frame.width, frame.height, q, out_au.payload) &&
-                !out_au.payload.empty()) {
-                out_au.codec = VideoCodecId::kJpegFrame;
-                out_au.is_keyframe = true; // Every JPEG frame is 100% self-contained & loss-resilient!
-                out_au.encode_duration_us = NowUs() - t0;
-                return true;
-            }
-        }
-
+        // Mode 1: Explicit GPU Hardware HEVC (Apple VideoToolbox -> Apple/Android GPU Decode!)
+        // Also auto-selected in kAuto when gaming 144Hz (>=12Mbps) and both peers support HEVC.
 #if defined(__APPLE__)
-        // Use Hardware VideoToolbox HEVC ONLY when remote peer also supports HEVC hardware decode!
-        bool use_hevc = peer_supports_hevc_ &&
+        bool want_hevc = false;
+        if (codec_pref_ == CodecPreference::kGpuHevc) {
+            want_hevc = peer_supports_hevc_;
+        } else if (codec_pref_ == CodecPreference::kAuto) {
+            want_hevc = peer_supports_hevc_ &&
+                        (!peer_supports_jpeg_ || target_bitrate_kbps >= 20000) &&
                         (!prefer_narrowband_tiles || (frame.dirty_ratio > 0.35f && target_bitrate_kbps >= 600));
-        if (use_hevc) {
+        }
+        if (want_hevc) {
             bool is_idr = false;
             bool need_idr = force_keyframe || !prev_was_hevc_;
             if (vt_hevc_.EncodeFrame(frame, target_bitrate_kbps, need_idr, out_au.payload, is_idr)) {
@@ -685,9 +884,30 @@ public:
         }
         prev_was_hevc_ = false;
 #else
-        (void)target_bitrate_kbps;
         (void)prefer_narrowband_tiles;
 #endif
+
+        // Mode 2: Hardware-Accelerated JPEG (Apple ImageIO / Windows WIC -> Flutter SIMD libjpeg-turbo)
+        bool want_jpeg = (codec_pref_ == CodecPreference::kHardwareJpeg ||
+                          codec_pref_ == CodecPreference::kAuto ||
+                          codec_pref_ == CodecPreference::kGpuHevc) &&
+                         peer_supports_jpeg_;
+        if (want_jpeg) {
+            float q = 0.64f;
+            if (target_bitrate_kbps <= 800) {
+                q = 0.44f;
+            } else if (target_bitrate_kbps >= 12000) {
+                q = 0.80f;
+            }
+            if (EncodeHardwareJpeg(frame.bgra.data(), frame.width, frame.height, q, out_au.payload) &&
+                !out_au.payload.empty()) {
+                need_tile_resync_ = true;
+                out_au.codec = VideoCodecId::kJpegFrame;
+                out_au.is_keyframe = true; // Every JPEG frame is 100% self-contained & loss-resilient!
+                out_au.encode_duration_us = NowUs() - t0;
+                return true;
+            }
+        }
 
         // Narrowband Dirty-Tile XOR-Residual + LZ4 path:
         // Encodes ONLY (cur_tile ^ ref_tile) so unchanged pixels inside a 64x64 tile become 0x00 and compress 40x!
@@ -757,6 +977,7 @@ private:
     bool need_tile_resync_ = true;
     bool peer_supports_hevc_ = true;
     bool peer_supports_jpeg_ = false;
+    CodecPreference codec_pref_ = CodecPreference::kAuto;
 #if defined(__APPLE__)
     AppleHevcEncoder vt_hevc_;
     bool prev_was_hevc_ = false;
@@ -794,6 +1015,17 @@ public:
 #if defined(__APPLE__)
             std::vector<uint8_t> decoded;
             if (!vt_hevc_dec_.DecodeFrame(au.payload.data(), au.payload.size(), au.width, au.height, decoded)) {
+                return false;
+            }
+            if (decoded.size() == canvas_bytes) {
+                canvas_ = decoded;
+            }
+            out_frame.bgra = canvas_;
+            out_frame.decode_duration_us = NowUs() - t0;
+            return true;
+#elif defined(__ANDROID__)
+            std::vector<uint8_t> decoded;
+            if (!android_hevc_dec_.DecodeFrame(au.payload.data(), au.payload.size(), au.width, au.height, decoded)) {
                 return false;
             }
             if (decoded.size() == canvas_bytes) {
@@ -861,6 +1093,8 @@ private:
     std::vector<uint8_t> canvas_;
 #if defined(__APPLE__)
     AppleHevcDecoder vt_hevc_dec_;
+#elif defined(__ANDROID__)
+    AndroidHevcDecoder android_hevc_dec_;
 #endif
 };
 

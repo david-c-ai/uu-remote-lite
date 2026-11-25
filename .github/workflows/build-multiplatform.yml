@@ -135,11 +135,14 @@ jobs:
             core/src/fec_qos.cpp \
             core/src/capture_hal.cpp \
             core/src/codec_hal.cpp \
+            core/src/keymap_hal.cpp \
+            core/src/audio_hal.cpp \
             core/src/hid_clipboard_file.cpp \
             core/src/session_engine.cpp \
             core/src/dircore_ffi.cpp \
             -framework Foundation -framework CoreFoundation -framework CoreGraphics \
-            -framework CoreVideo -framework CoreMedia -framework ImageIO -framework VideoToolbox -lcompression \
+            -framework CoreVideo -framework CoreMedia -framework ImageIO \
+            -framework VideoToolbox -framework AudioToolbox -lcompression \
             -o build-ios/dircore.framework/dircore
           strip -x build-ios/dircore.framework/dircore
 
@@ -157,9 +160,9 @@ jobs:
             <key>CFBundlePackageType</key>
             <string>FMWK</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.1.0</string>
+            <string>1.2.0</string>
             <key>CFBundleVersion</key>
-            <string>2</string>
+            <string>4</string>
             <key>MinimumOSVersion</key>
             <string>15.0</string>
           </dict>

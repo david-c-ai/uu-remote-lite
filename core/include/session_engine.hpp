@@ -1,10 +1,12 @@
 #pragma once
 
+#include "audio_hal.hpp"
 #include "capture_hal.hpp"
 #include "codec_hal.hpp"
 #include "crypto_e2ee.hpp"
 #include "fec_qos.hpp"
 #include "hid_clipboard_file.hpp"
+#include "keymap_hal.hpp"
 #include "server_protocol.hpp"
 #include "wire_proto.hpp"
 
@@ -62,6 +64,7 @@ struct NodeConfig {
     bool use_synthetic_capture = false;
     bool block_direct_p2p_for_test = false; // Simulates strict Symmetric NAT to test Happy-Eyeballs Relay
     float simulated_rx_loss_pct = 0.0f;     // Simulates weak network UDP packet drops
+    HostOsType simulated_os_override = HostOsType::kUnknown; // Optional OS simulation for cross-OS E2E tests
     std::string download_dir = "/tmp";
 };
 
@@ -86,11 +89,17 @@ public:
     void SendCursorMoveFast(uint16_t x_norm, uint16_t y_norm, int16_t dx = 0, int16_t dy = 0,
                             uint8_t button_mask = 0, int16_t wheel_y = 0);
     void SendKey(uint16_t keycode, bool is_down, uint8_t modifiers = 0);
+    void SendUnicodeText(const std::string& utf8_text);
     void SendGamepad(const PayloadGamepad& pad);
     void SetQualityProfile(QualityProfile profile, uint8_t target_fps = 60,
-                           bool privacy_curtain = false, uint8_t monitor_index = 0);
+                           bool privacy_curtain = false, uint8_t monitor_index = 0,
+                           CodecPreference codec_pref = CodecPreference::kAuto,
+                           bool audio_enabled = true);
     void SendClipboardText(const std::string& utf8_text);
     bool SendFile(const std::string& local_file_path, uint64_t file_id = 1);
+    void InjectSyntheticAudioFrameForTest(const int16_t* pcm_interleaved,
+                                          size_t stereo_frames,
+                                          uint32_t sample_rate = 48000);
 
     std::string LastClipboardText() const;
     bool CopyLatestFrameBgra(std::vector<uint8_t>& out_bgra, uint16_t& out_w, uint16_t& out_h) const;
@@ -101,8 +110,18 @@ public:
                            std::vector<uint8_t>& out_bytes,
                            uint16_t& out_w,
                            uint16_t& out_h) const;
-    void ForceJpegModeForTest(bool enable) { force_jpeg_test_ = enable; }
+    void ForceJpegModeForTest(bool enable) {
+        force_jpeg_test_ = enable;
+        if (enable && encoder_) {
+            encoder_->SetCodecPreference(CodecPreference::kHardwareJpeg);
+        }
+    }
     uint64_t HostInjectedInputCount() const { return input_dispatcher_.InjectedEventCount(); }
+    uint64_t HostInjectedTextCount() const { return input_dispatcher_.InjectedTextCount(); }
+    std::string HostLastUnicodeText() const { return input_dispatcher_.LastUnicodeText(); }
+    HostOsType HostPeerOsType() const { return input_dispatcher_.PeerOsType(); }
+    uint64_t HostAudioPacketsSent() const { return audio_tx_pkts_.load(); }
+    uint64_t ClientAudioPacketsReceived() const { return audio_rx_pkts_.load(); }
     bool IsLastFileVerified() const { return last_file_sha256_ok_.load(); }
 
 private:
@@ -126,8 +145,10 @@ private:
 
     void SendEncrypted(QoSLane lane, PacketType type, const void* payload, size_t len, uint32_t ack_or_group = 0);
     void SendRawWireToActivePath(const uint8_t* data, size_t len);
+    void SendPcmAudioFrame(const int16_t* pcm_interleaved, size_t stereo_frames, uint32_t sample_rate);
     void HandleWirePacket(const uint8_t* raw, size_t len, const uu::server::EndpointV4& sender_ep, bool via_relay);
     void HandleVideoPacket(PacketType type, const uint8_t* payload, size_t len);
+    void HandleAudioPacket(const uint8_t* payload, size_t len);
 
     NodeConfig cfg_;
     int sock_ = -1;
@@ -158,8 +179,20 @@ private:
     SyntheticCapturer* synthetic_ptr_ = nullptr;
     std::unique_ptr<IVideoEncoder> encoder_;
     std::unique_ptr<IVideoDecoder> decoder_;
+    std::unique_ptr<ISystemAudioCapturer> audio_capturer_;
+    std::unique_ptr<IAudioPlayer> audio_player_;
     InputDispatcher input_dispatcher_{false};
     ResumableFileEngine file_engine_;
+
+    std::atomic<bool> audio_enabled_{true};
+    std::atomic<bool> audio_capturer_started_{false};
+    std::atomic<bool> audio_player_started_{false};
+    std::atomic<uint32_t> audio_tx_seq_{1};
+    std::atomic<uint64_t> audio_tx_pkts_{0};
+    std::atomic<uint64_t> audio_rx_pkts_{0};
+    std::mutex audio_tx_mu_;
+    AdpcmChannelState audio_enc_l_{};
+    AdpcmChannelState audio_enc_r_{};
 
     mutable std::mutex state_mu_;
     SessionTelemetry telemetry_{};

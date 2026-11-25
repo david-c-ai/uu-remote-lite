@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(DirRemote VERSION 1.1.0 LANGUAGES CXX)
+project(DirRemote VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +39,8 @@ set(DIRCORE_SOURCES
     core/src/fec_qos.cpp
     core/src/capture_hal.cpp
     core/src/codec_hal.cpp
+    core/src/keymap_hal.cpp
+    core/src/audio_hal.cpp
     core/src/hid_clipboard_file.cpp
     core/src/session_engine.cpp
     core/src/dircore_ffi.cpp
@@ -54,8 +56,9 @@ if(APPLE)
     find_library(COREMEDIA_FW CoreMedia)
     find_library(IMAGEIO_FW ImageIO)
     find_library(VIDEOTOOLBOX_FW VideoToolbox)
+    find_library(AUDIOTOOLBOX_FW AudioToolbox)
     find_library(COREFOUNDATION_FW CoreFoundation)
-    set_source_files_properties(core/src/capture_hal.cpp PROPERTIES COMPILE_FLAGS "-ObjC++ -fobjc-arc")
+    set_source_files_properties(core/src/capture_hal.cpp core/src/audio_hal.cpp PROPERTIES COMPILE_FLAGS "-ObjC++ -fobjc-arc")
     target_link_libraries(dircore PRIVATE
         ${FOUNDATION_FW}
         ${COREFOUNDATION_FW}
@@ -63,6 +66,7 @@ if(APPLE)
         ${COREMEDIA_FW}
         ${IMAGEIO_FW}
         ${VIDEOTOOLBOX_FW}
+        ${AUDIOTOOLBOX_FW}
         compression
     )
     if(NOT IOS)
@@ -71,9 +75,9 @@ if(APPLE)
         target_link_libraries(dircore PRIVATE ${COREGRAPHICS_FW} ${APPSERVICES_FW} ${SCK_FW})
     endif()
 elseif(WIN32)
-    target_link_libraries(dircore PRIVATE ws2_32 d3d11 dxgi user32 gdi32 windowscodecs ole32)
+    target_link_libraries(dircore PRIVATE ws2_32 d3d11 dxgi user32 gdi32 windowscodecs ole32 winmm)
 elseif(ANDROID)
-    target_link_libraries(dircore PRIVATE mediandk log)
+    target_link_libraries(dircore PRIVATE mediandk aaudio log)
 else()
     target_link_libraries(dircore PRIVATE Threads::Threads)
 endif()

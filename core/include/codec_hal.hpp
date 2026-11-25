@@ -35,6 +35,13 @@ bool DecompressFastLz4(const uint8_t* src, size_t src_len, uint8_t* dst, size_t 
 bool EncodeHardwareJpeg(const uint8_t* bgra, uint16_t width, uint16_t height,
                         float quality, std::vector<uint8_t>& out_jpeg);
 
+enum class CodecPreference : uint8_t {
+    kAuto         = 0, // Smart hybrid (Auto GPU HEVC / HW JPEG / Tile)
+    kTileLossless = 1, // Force lossless Dirty-Tile RLE (crisp text/code)
+    kGpuHevc      = 2, // Prefer GPU H.265 / HEVC hardware encode & decode
+    kHardwareJpeg = 3, // Prefer Hardware ImageIO/WIC JPEG + libjpeg-turbo
+};
+
 class IVideoEncoder {
 public:
     virtual ~IVideoEncoder() = default;
@@ -46,6 +53,7 @@ public:
     virtual bool SupportsHardwareHevc() const = 0;
     virtual void SetPeerSupportsHevc(bool supported) = 0;
     virtual void SetPeerSupportsJpeg(bool supported) = 0;
+    virtual void SetCodecPreference(CodecPreference pref) = 0;
 };
 
 class IVideoDecoder {
