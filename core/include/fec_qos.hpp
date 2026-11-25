@@ -27,6 +27,8 @@ public:
     // Pops highest-priority packet first; P0 never waits behind P1 video bursts or P2 file chunks!
     bool PopNext(std::vector<uint8_t>& out_bytes);
 
+    void ClearMediaQueue();
+
     // Acknowledge P2 reliable packet
     void AckReliable(uint32_t reliable_seq);
 

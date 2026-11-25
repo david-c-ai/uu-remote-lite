@@ -55,16 +55,7 @@ size_t CompressFastLz4(const uint8_t* src, size_t src_len, std::vector<uint8_t>&
         out_dst.clear();
         return 0;
     }
-#if defined(__APPLE__)
-    out_dst.resize(src_len + 128);
-    size_t written = compression_encode_buffer(
-        out_dst.data(), out_dst.size(), src, src_len, nullptr, COMPRESSION_LZ4);
-    if (written > 0 && written < src_len) {
-        out_dst.resize(written);
-        return written;
-    }
-#else
-    // Portable fast 4-byte pixel run-length compressor for Windows/Android builds without external C deps
+    // Unified cross-OS 4-byte pixel run-length compressor (100% wire-compatible across Mac/Win/Android/iOS/Linux!)
     out_dst.clear();
     out_dst.reserve(src_len);
     size_t i = 0;
@@ -99,18 +90,12 @@ size_t CompressFastLz4(const uint8_t* src, size_t src_len, std::vector<uint8_t>&
     if (out_dst.size() < src_len) {
         return out_dst.size();
     }
-#endif
     out_dst.clear();
     return 0; // Indicates raw is smaller or incompressible
 }
 
 bool DecompressFastLz4(const uint8_t* src, size_t src_len, uint8_t* dst, size_t expected_dst_len) {
     if (expected_dst_len == 0) return true;
-#if defined(__APPLE__)
-    size_t decoded = compression_decode_buffer(
-        dst, expected_dst_len, src, src_len, nullptr, COMPRESSION_LZ4);
-    return decoded == expected_dst_len;
-#else
     size_t sp = 0;
     size_t dp = 0;
     while (sp < src_len && dp < expected_dst_len) {
@@ -132,7 +117,6 @@ bool DecompressFastLz4(const uint8_t* src, size_t src_len, uint8_t* dst, size_t 
         }
     }
     return dp == expected_dst_len;
-#endif
 }
 
 // --- Apple VideoToolbox Hardware HEVC (H.265) Zero-Latency Encoder & Decoder ---
@@ -501,6 +485,10 @@ public:
 #endif
     }
 
+    void SetPeerSupportsHevc(bool supported) override {
+        peer_supports_hevc_ = supported;
+    }
+
     bool Encode(const CapturedFrame& frame,
                 uint32_t target_bitrate_kbps,
                 bool force_keyframe,
@@ -520,8 +508,9 @@ public:
         }
 
 #if defined(__APPLE__)
-        // Use Hardware VideoToolbox HEVC for high-motion video/gaming unless narrowband tile mode is preferred
-        bool use_hevc = !prefer_narrowband_tiles || (frame.dirty_ratio > 0.35f && target_bitrate_kbps >= 600);
+        // Use Hardware VideoToolbox HEVC ONLY when remote peer also supports HEVC hardware decode!
+        bool use_hevc = peer_supports_hevc_ &&
+                        (!prefer_narrowband_tiles || (frame.dirty_ratio > 0.35f && target_bitrate_kbps >= 600));
         if (use_hevc) {
             bool is_idr = false;
             bool need_idr = force_keyframe || !prev_was_hevc_;
@@ -606,6 +595,7 @@ public:
 private:
     std::vector<uint8_t> ref_canvas_;
     bool need_tile_resync_ = true;
+    bool peer_supports_hevc_ = true;
 #if defined(__APPLE__)
     AppleHevcEncoder vt_hevc_;
     bool prev_was_hevc_ = false;

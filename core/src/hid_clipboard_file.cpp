@@ -40,8 +40,12 @@ void InputDispatcher::ApplyMouse(const PayloadMouseEvent& ev) {
     if (!enable_os_injection_) return;
 
 #if defined(__APPLE__) && TARGET_OS_OSX
-    double px = (static_cast<double>(ev.x_norm) / 65535.0) * display_w_;
-    double py = (static_cast<double>(ev.y_norm) / 65535.0) * display_h_;
+    size_t logical_w = CGDisplayPixelsWide(CGMainDisplayID());
+    size_t logical_h = CGDisplayPixelsHigh(CGMainDisplayID());
+    double target_w = logical_w > 0 ? static_cast<double>(logical_w) : static_cast<double>(display_w_);
+    double target_h = logical_h > 0 ? static_cast<double>(logical_h) : static_cast<double>(display_h_);
+    double px = (static_cast<double>(ev.x_norm) / 65535.0) * target_w;
+    double py = (static_cast<double>(ev.y_norm) / 65535.0) * target_h;
     CGPoint pt = CGPointMake(px, py);
 
     auto post_btn = [&](CGEventType type, CGMouseButton btn) {

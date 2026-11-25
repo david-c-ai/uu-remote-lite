@@ -138,8 +138,17 @@ uint32_t DetectLocalRouteIpBe(const uu::server::EndpointV4& target_ep) {
 struct HandshakeHello {
     uint8_t static_pub[32];
     uint64_t send_ts_us;
+    uint32_t codec_caps; // Bit 0: TileDeltaLz4, Bit 1: Apple VideoToolbox HEVC
 };
 #pragma pack(pop)
+
+uint32_t LocalCodecCaps() {
+#if defined(__APPLE__)
+    return 0x03;
+#else
+    return 0x01;
+#endif
+}
 
 } // namespace
 
@@ -364,7 +373,7 @@ void PeerNode::SendRawWireToActivePath(const uint8_t* data, size_t len) {
 void PeerNode::FlushScheduler() {
     std::vector<uint8_t> pkt;
     int burst_guard = 0;
-    while (burst_guard++ < 128 && scheduler_.PopNext(pkt)) {
+    while (burst_guard++ < 48 && scheduler_.PopNext(pkt)) {
         bytes_window_ += pkt.size();
         SendRawWireToActivePath(pkt.data(), pkt.size());
     }
@@ -403,6 +412,14 @@ void PeerNode::NetworkLoop() {
                         hbbr_ep_.port_be = ord->relay_port_be;
                         relay_token_ = ord->relay_token;
 
+                        // Reset session queues cleanly so repeat client reconnections always succeed
+                        path_.store(TransportPath::kDisconnected);
+                        scheduler_.ClearMediaQueue();
+                        last_rx_seq_ = 0;
+                        if (encoder_) {
+                            encoder_->SetPeerSupportsHevc(false);
+                        }
+
                         std::array<uint8_t, 32> peer_pub{};
                         std::memcpy(peer_pub.data(), ord->peer_pubkey, 32);
                         auto shared = CryptoEngine::X25519SharedSecret(static_keys_.secret, peer_pub);
@@ -423,6 +440,7 @@ void PeerNode::NetworkLoop() {
                         HandshakeHello hello{};
                         std::memcpy(hello.static_pub, static_keys_.pub.data(), 32);
                         hello.send_ts_us = NowUs();
+                        hello.codec_caps = LocalCodecCaps();
                         SendEncrypted(QoSLane::kP0_FastInput, PacketType::kHelloInit, &hello, sizeof(hello));
 
                         std::vector<uint8_t> hello_wire;
@@ -450,6 +468,7 @@ void PeerNode::NetworkLoop() {
                             HandshakeHello hello{};
                             std::memcpy(hello.static_pub, static_keys_.pub.data(), 32);
                             hello.send_ts_us = NowUs();
+                            hello.codec_caps = LocalCodecCaps();
                             SendEncrypted(QoSLane::kP0_FastInput, PacketType::kHelloInit, &hello, sizeof(hello));
                         }
                     }
@@ -561,14 +580,33 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
 
     switch (hdr->type) {
         case PacketType::kHelloInit: {
+            if (encoder_) {
+                bool peer_hevc = false;
+                if (pt.size() >= sizeof(HandshakeHello)) {
+                    HandshakeHello peer_h{};
+                    std::memcpy(&peer_h, pt.data(), sizeof(peer_h));
+                    peer_hevc = (peer_h.codec_caps & 0x02) != 0;
+                }
+                encoder_->SetPeerSupportsHevc(peer_hevc);
+            }
             HandshakeHello accept{};
             std::memcpy(accept.static_pub, static_keys_.pub.data(), 32);
             accept.send_ts_us = NowUs();
+            accept.codec_caps = LocalCodecCaps();
             SendEncrypted(QoSLane::kP0_FastInput, PacketType::kHelloAccept, &accept, sizeof(accept));
             force_next_idr_.store(true);
             break;
         }
         case PacketType::kHelloAccept: {
+            if (encoder_) {
+                bool peer_hevc = false;
+                if (pt.size() >= sizeof(HandshakeHello)) {
+                    HandshakeHello peer_h{};
+                    std::memcpy(&peer_h, pt.data(), sizeof(peer_h));
+                    peer_hevc = (peer_h.codec_caps & 0x02) != 0;
+                }
+                encoder_->SetPeerSupportsHevc(peer_hevc);
+            }
             force_next_idr_.store(true);
             break;
         }

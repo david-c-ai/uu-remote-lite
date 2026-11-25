@@ -269,6 +269,10 @@ public:
         active_display_ = mons[monitor_index].os_display_id;
         active_w_ = mons[monitor_index].width;
         active_h_ = mons[monitor_index].height;
+#if defined(__OBJC__)
+        cached_filter_ = nil;
+        cached_cfg_ = nil;
+#endif
         dirty_tracker_.Reset();
         return true;
     }
@@ -278,38 +282,51 @@ public:
 #if defined(__OBJC__)
         if (@available(macOS 14.0, *)) {
             if (CGPreflightScreenCaptureAccess()) {
-                __block CGImageRef captured = nullptr;
-                dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-                [SCShareableContent getShareableContentWithCompletionHandler:^(
-                                        SCShareableContent* content, NSError* err) {
-                    if (!content || err || content.displays.count == 0) {
-                        dispatch_semaphore_signal(sem);
-                        return;
-                    }
-                    SCDisplay* target = content.displays.firstObject;
-                    for (SCDisplay* d in content.displays) {
-                        if (d.displayID == active_display_) {
-                            target = d;
-                            break;
+                if (!cached_filter_ || !cached_cfg_) {
+                    dispatch_semaphore_t init_sem = dispatch_semaphore_create(0);
+                    [SCShareableContent getShareableContentWithCompletionHandler:^(
+                                            SCShareableContent* content, NSError* err) {
+                        if (content && !err && content.displays.count > 0) {
+                            SCDisplay* target = content.displays.firstObject;
+                            for (SCDisplay* d in content.displays) {
+                                if (d.displayID == active_display_) {
+                                    target = d;
+                                    break;
+                                }
+                            }
+                            cached_filter_ = [[SCContentFilter alloc] initWithDisplay:target
+                                                                     excludingWindows:@[]];
+                            SCStreamConfiguration* cfg = [[SCStreamConfiguration alloc] init];
+                            size_t tw = target.width > 0 ? target.width : 1280;
+                            size_t th = target.height > 0 ? target.height : 800;
+                            if (tw > 1280) {
+                                th = (th * 1280) / tw;
+                                tw = 1280;
+                            }
+                            cfg.width = (tw & ~size_t(1));
+                            cfg.height = (th & ~size_t(1));
+                            cfg.showsCursor = NO;
+                            cached_cfg_ = cfg;
                         }
-                    }
-                    SCContentFilter* filter = [[SCContentFilter alloc] initWithDisplay:target
-                                                                      excludingWindows:@[]];
-                    SCStreamConfiguration* cfg = [[SCStreamConfiguration alloc] init];
-                    cfg.width = target.width;
-                    cfg.height = target.height;
-                    cfg.showsCursor = NO; // Decoupled cursor channel!
-                    [SCScreenshotManager captureImageWithFilter:filter
-                                                  configuration:cfg
+                        dispatch_semaphore_signal(init_sem);
+                    }];
+                    dispatch_semaphore_wait(init_sem, dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC));
+                }
+
+                if (cached_filter_ && cached_cfg_) {
+                    __block CGImageRef captured = nullptr;
+                    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+                    [SCScreenshotManager captureImageWithFilter:cached_filter_
+                                                  configuration:cached_cfg_
                                               completionHandler:^(CGImageRef sample, NSError* sErr) {
                                                   if (sample && !sErr) {
                                                       captured = CGImageRetain(sample);
                                                   }
                                                   dispatch_semaphore_signal(sem);
                                               }];
-                }];
-                dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_MSEC));
-                img = captured;
+                    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC));
+                    img = captured;
+                }
             }
         }
 #endif
@@ -367,6 +384,10 @@ private:
     uint16_t active_w_ = 1920;
     uint16_t active_h_ = 1080;
     uint32_t seq_ = 0;
+#if defined(__OBJC__)
+    SCContentFilter* cached_filter_ = nil;
+    SCStreamConfiguration* cached_cfg_ = nil;
+#endif
     DirtyRectTracker dirty_tracker_;
     SyntheticCapturer fallback_{1280, 720};
 };

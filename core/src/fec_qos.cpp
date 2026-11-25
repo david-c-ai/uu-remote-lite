@@ -19,8 +19,8 @@ void QoSScheduler::Enqueue(QoSLane lane, PacketType type, std::vector<uint8_t>&&
         }
         lane_p0_.push_back(std::move(pkt));
     } else if (lane == QoSLane::kP1_Media) {
-        // Drop oldest media bursts if severe congestion exceeds 512 shards
-        if (lane_p1_.size() >= 512) {
+        // Allow up to 8192 shards so high-resolution keyframes never self-truncate
+        if (lane_p1_.size() >= 8192) {
             lane_p1_.pop_front();
         }
         lane_p1_.push_back(std::move(pkt));
@@ -50,6 +50,12 @@ bool QoSScheduler::PopNext(std::vector<uint8_t>& out_bytes) {
         return true;
     }
     return false;
+}
+
+void QoSScheduler::ClearMediaQueue() {
+    std::lock_guard<std::mutex> lk(mu_);
+    lane_p0_.clear();
+    lane_p1_.clear();
 }
 
 void QoSScheduler::AckReliable(uint32_t reliable_seq) {

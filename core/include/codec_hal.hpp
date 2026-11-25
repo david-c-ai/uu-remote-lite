@@ -41,6 +41,7 @@ public:
                         bool prefer_narrowband_tiles,
                         EncodedAccessUnit& out_au) = 0;
     virtual bool SupportsHardwareHevc() const = 0;
+    virtual void SetPeerSupportsHevc(bool supported) = 0;
 };
 
 class IVideoDecoder {
