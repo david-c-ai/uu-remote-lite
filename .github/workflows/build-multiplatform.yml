@@ -160,9 +160,9 @@ jobs:
             <key>CFBundlePackageType</key>
             <string>FMWK</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.2.1</string>
+            <string>1.2.2</string>
             <key>CFBundleVersion</key>
-            <string>5</string>
+            <string>6</string>
             <key>MinimumOSVersion</key>
             <string>15.0</string>
           </dict>
@@ -307,19 +307,32 @@ jobs:
 
           flutter pub get
           flutter build apk --release
-          cp build/app/outputs/flutter-apk/app-release.apk ../DirRemote-Android.apk
 
-          # Optional persistent Android signing (when configured in GitHub Secrets, enables 1-tap overwrite upgrades!)
+          BUILD_TOOLS_DIR=$(ls -d $ANDROID_SDK_ROOT/build-tools/* | sort -V | tail -n 1)
+          ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+
+          # Align APK cleanly before persistent v1/v2/v3 signing (enables 1-tap overwrite upgrades forever!)
+          "$ZIPALIGN" -p -f 4 build/app/outputs/flutter-apk/app-release.apk ../DirRemote-Android.apk
+
           if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
             echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > /tmp/dirremote.jks
-            APKSIGNER=$(ls -d $ANDROID_SDK_ROOT/build-tools/*/apksigner | sort -V | tail -n 1)
             "$APKSIGNER" sign \
               --ks /tmp/dirremote.jks \
               --ks-key-alias "${{ secrets.ANDROID_KEY_ALIAS }}" \
               --ks-pass "pass:${{ secrets.ANDROID_STORE_PASSWORD }}" \
               --key-pass "pass:${{ secrets.ANDROID_KEY_PASSWORD }}" \
               ../DirRemote-Android.apk
+          else
+            "$APKSIGNER" sign \
+              --ks signing/dirremote-community.p12 \
+              --ks-type PKCS12 \
+              --ks-key-alias dirremote \
+              --ks-pass pass:dirremote \
+              --key-pass pass:dirremote \
+              ../DirRemote-Android.apk
           fi
+          "$APKSIGNER" verify --print-certs ../DirRemote-Android.apk
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
