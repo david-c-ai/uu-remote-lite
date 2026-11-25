@@ -52,6 +52,7 @@ if(APPLE)
     find_library(COREGRAPHICS_FW CoreGraphics)
     find_library(COREVIDEO_FW CoreVideo)
     find_library(COREMEDIA_FW CoreMedia)
+    find_library(IMAGEIO_FW ImageIO)
     find_library(VIDEOTOOLBOX_FW VideoToolbox)
     find_library(COREFOUNDATION_FW CoreFoundation)
     set_source_files_properties(core/src/capture_hal.cpp PROPERTIES COMPILE_FLAGS "-ObjC++ -fobjc-arc")
@@ -60,6 +61,7 @@ if(APPLE)
         ${COREFOUNDATION_FW}
         ${COREVIDEO_FW}
         ${COREMEDIA_FW}
+        ${IMAGEIO_FW}
         ${VIDEOTOOLBOX_FW}
         compression
     )
@@ -69,7 +71,7 @@ if(APPLE)
         target_link_libraries(dircore PRIVATE ${COREGRAPHICS_FW} ${APPSERVICES_FW} ${SCK_FW})
     endif()
 elseif(WIN32)
-    target_link_libraries(dircore PRIVATE ws2_32 d3d11 dxgi user32 gdi32)
+    target_link_libraries(dircore PRIVATE ws2_32 d3d11 dxgi user32 gdi32 windowscodecs ole32)
 elseif(ANDROID)
     target_link_libraries(dircore PRIVATE mediandk log)
 else()

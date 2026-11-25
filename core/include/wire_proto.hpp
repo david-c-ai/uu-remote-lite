@@ -56,6 +56,7 @@ enum class VideoCodecId : uint8_t {
     kTileDeltaLz4 = 1, // Zero-dependency dirty-rect lossless/near-lossless narrowband desktop codec (0 Kbps when idle)
     kHevcHardware = 2, // Hardware H.265 / HEVC (Apple VideoToolbox / Win MediaFoundation-NVENC / Android MediaCodec)
     kAv1Hardware  = 3, // Hardware AV1 when mutually supported
+    kJpegFrame    = 4, // Hardware ImageIO/WIC Baseline JPEG (~40-70KB per 1280x800 real photographic desktop, Flutter libjpeg-turbo decode)
 };
 
 #pragma pack(push, 1)

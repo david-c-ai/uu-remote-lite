@@ -94,6 +94,14 @@ public:
 
     std::string LastClipboardText() const;
     bool CopyLatestFrameBgra(std::vector<uint8_t>& out_bgra, uint16_t& out_w, uint16_t& out_h) const;
+    // out_format: 1 = BGRA8888 raw, 2 = JPEG compressed bitstream (decoded by Flutter SIMD libjpeg-turbo)
+    bool CopyLatestFrameEx(uint64_t last_seen_seq,
+                           uint64_t& out_seq,
+                           uint8_t& out_format,
+                           std::vector<uint8_t>& out_bytes,
+                           uint16_t& out_w,
+                           uint16_t& out_h) const;
+    void ForceJpegModeForTest(bool enable) { force_jpeg_test_ = enable; }
     uint64_t HostInjectedInputCount() const { return input_dispatcher_.InjectedEventCount(); }
     bool IsLastFileVerified() const { return last_file_sha256_ok_.load(); }
 
@@ -157,8 +165,12 @@ private:
     SessionTelemetry telemetry_{};
     std::string last_clipboard_;
     std::vector<uint8_t> latest_bgra_;
+    std::vector<uint8_t> latest_jpeg_;
+    uint64_t latest_frame_seq_ = 0;
+    uint8_t latest_frame_format_ = 0; // 1 = BGRA, 2 = JPEG
     uint16_t latest_w_ = 0;
     uint16_t latest_h_ = 0;
+    bool force_jpeg_test_ = false;
     std::unordered_map<uint64_t, std::vector<uint8_t>> cursor_shape_cache_;
     std::unordered_map<uint32_t, RxFrameAssembly> rx_frames_;
 

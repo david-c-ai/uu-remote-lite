@@ -85,6 +85,11 @@ size_t QoSScheduler::PendingCount() const {
     return lane_p0_.size() + lane_p1_.size() + lane_p2_.size();
 }
 
+size_t QoSScheduler::PendingMediaCount() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return lane_p1_.size();
+}
+
 uint16_t AdaptiveFecCodec::RecommendGroupSize(float loss_pct) {
     if (loss_pct < 0.8f) return 0; // Zero overhead on clean links!
     if (loss_pct < 4.5f) return 6; // ~16% parity overhead

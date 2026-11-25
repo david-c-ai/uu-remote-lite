@@ -100,6 +100,46 @@ int32_t dir_node_copy_frame_rgba(DirHandle handle,
     return static_cast<int32_t>(expected);
 }
 
+int32_t dir_node_copy_frame_ex(DirHandle handle,
+                               uint64_t last_seen_seq,
+                               uint64_t* out_seq,
+                               uint8_t* out_format,
+                               uint8_t* dst_buf,
+                               uint32_t dst_capacity,
+                               uint16_t* out_width,
+                               uint16_t* out_height) {
+    if (!handle || !handle->node || !dst_buf) return 0;
+    uint64_t seq = 0;
+    uint8_t fmt = 0;
+    std::vector<uint8_t> raw;
+    uint16_t w = 0, h = 0;
+    if (!handle->node->CopyLatestFrameEx(last_seen_seq, seq, fmt, raw, w, h)) return 0;
+
+    if (out_seq) *out_seq = seq;
+    if (out_width) *out_width = w;
+    if (out_height) *out_height = h;
+
+    if (fmt == 2) {
+        // Direct compact JPEG bitstream (~40-70KB): zero CPU conversion!
+        if (raw.size() > dst_capacity) return -1;
+        if (out_format) *out_format = 2;
+        std::memcpy(dst_buf, raw.data(), raw.size());
+        return static_cast<int32_t>(raw.size());
+    }
+
+    const size_t expected = static_cast<size_t>(w) * h * 4;
+    if (raw.size() < expected || expected == 0 || expected > dst_capacity) return -1;
+    if (out_format) *out_format = 1;
+    const uint8_t* src = raw.data();
+    for (size_t i = 0; i < expected; i += 4) {
+        dst_buf[i + 0] = src[i + 2];
+        dst_buf[i + 1] = src[i + 1];
+        dst_buf[i + 2] = src[i + 0];
+        dst_buf[i + 3] = 255;
+    }
+    return static_cast<int32_t>(expected);
+}
+
 void dir_node_send_mouse_ex(DirHandle handle, uint16_t x_norm, uint16_t y_norm,
                             int16_t dx, int16_t dy, uint8_t button_mask, int16_t wheel_y) {
     if (handle && handle->node) {

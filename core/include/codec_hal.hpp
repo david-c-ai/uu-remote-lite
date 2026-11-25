@@ -25,12 +25,15 @@ struct DecodedFrame {
     uint16_t height = 0;
     VideoCodecId codec = VideoCodecId::kTileDeltaLz4;
     uint64_t decode_duration_us = 0;
-    std::vector<uint8_t> bgra;
+    std::vector<uint8_t> bgra;        // Populated for TileDeltaLz4 / Hardware HEVC
+    std::vector<uint8_t> jpeg_bytes;  // Populated zero-copy for kJpegFrame (decoded by Flutter SIMD libjpeg-turbo)
 };
 
-// Fast cross-platform LZ4 block wrapper (uses Apple libcompression SIMD LZ4 on macOS/iOS, portable fast LZ on Win/Android)
+// Fast cross-platform compression & hardware JPEG encoder (Apple ImageIO / Windows WIC)
 size_t CompressFastLz4(const uint8_t* src, size_t src_len, std::vector<uint8_t>& out_dst);
 bool DecompressFastLz4(const uint8_t* src, size_t src_len, uint8_t* dst, size_t expected_dst_len);
+bool EncodeHardwareJpeg(const uint8_t* bgra, uint16_t width, uint16_t height,
+                        float quality, std::vector<uint8_t>& out_jpeg);
 
 class IVideoEncoder {
 public:
@@ -42,6 +45,7 @@ public:
                         EncodedAccessUnit& out_au) = 0;
     virtual bool SupportsHardwareHevc() const = 0;
     virtual void SetPeerSupportsHevc(bool supported) = 0;
+    virtual void SetPeerSupportsJpeg(bool supported) = 0;
 };
 
 class IVideoDecoder {

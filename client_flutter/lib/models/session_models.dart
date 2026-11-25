@@ -85,7 +85,11 @@ class TelemetrySnapshot {
         _ => '重连中',
       };
 
-  String get codecBadge => activeCodec == 2 ? 'HEVC 硬编' : 'Tile 窄带';
+  String get codecBadge => switch (activeCodec) {
+        4 => 'JPEG 极速',
+        2 => 'HEVC 硬编',
+        _ => 'Tile 窄带',
+      };
 
   String get formattedBandwidth => realtimeKbps >= 1024
       ? '${(realtimeKbps / 1024.0).toStringAsFixed(2)} Mbps'

@@ -139,7 +139,7 @@ jobs:
             core/src/session_engine.cpp \
             core/src/dircore_ffi.cpp \
             -framework Foundation -framework CoreFoundation -framework CoreGraphics \
-            -framework CoreVideo -framework CoreMedia -framework VideoToolbox -lcompression \
+            -framework CoreVideo -framework CoreMedia -framework ImageIO -framework VideoToolbox -lcompression \
             -o build-ios/dircore.framework/dircore
           strip -x build-ios/dircore.framework/dircore
 
@@ -305,6 +305,18 @@ jobs:
           flutter pub get
           flutter build apk --release
           cp build/app/outputs/flutter-apk/app-release.apk ../DirRemote-Android.apk
+
+          # Optional persistent Android signing (when configured in GitHub Secrets, enables 1-tap overwrite upgrades!)
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > /tmp/dirremote.jks
+            APKSIGNER=$(ls -d $ANDROID_SDK_ROOT/build-tools/*/apksigner | sort -V | tail -n 1)
+            "$APKSIGNER" sign \
+              --ks /tmp/dirremote.jks \
+              --ks-key-alias "${{ secrets.ANDROID_KEY_ALIAS }}" \
+              --ks-pass "pass:${{ secrets.ANDROID_STORE_PASSWORD }}" \
+              --key-pass "pass:${{ secrets.ANDROID_KEY_PASSWORD }}" \
+              ../DirRemote-Android.apk
+          fi
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4

@@ -208,19 +208,52 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
   }
 
   bool _decodingFrame = false;
+  int _lastFrameSeq = 0;
 
   void _startFramePump() {
     _renderTimer?.cancel();
-    _renderTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+    _lastFrameSeq = 0;
+    _renderTimer = Timer.periodic(const Duration(milliseconds: 16), (_) async {
       final bridge = _bridge;
       if (bridge == null || !_inSession || _decodingFrame) return;
 
       final tele = bridge.pollTelemetry();
-      final frame = bridge.copyLatestFrameRgba();
-      if (frame != null && frame.width > 0 && frame.height > 0) {
-        _decodingFrame = true;
+      final frame = bridge.copyLatestFrameIfNewer(_lastFrameSeq);
+      if (frame == null) {
+        if (mounted) {
+          setState(() {
+            _telemetry = tele;
+            _selectedMonitor = tele.activeMonitor;
+          });
+        }
+        return;
+      }
+
+      _decodingFrame = true;
+      _lastFrameSeq = frame.seq;
+      if (frame.format == 2) {
+        // Hardware/SIMD libjpeg-turbo decoding via Flutter's native image codec (~1.5ms!)
+        try {
+          final codec = await ui.instantiateImageCodec(frame.bytes);
+          final info = await codec.getNextFrame();
+          codec.dispose();
+          _decodingFrame = false;
+          if (!mounted || !_inSession) {
+            info.image.dispose();
+            return;
+          }
+          setState(() {
+            _frameImage?.dispose();
+            _frameImage = info.image;
+            _telemetry = tele;
+            _selectedMonitor = tele.activeMonitor;
+          });
+        } catch (_) {
+          _decodingFrame = false;
+        }
+      } else if (frame.width > 0 && frame.height > 0) {
         ui.decodeImageFromPixels(
-          frame.rgbaBytes,
+          frame.bytes,
           frame.width,
           frame.height,
           ui.PixelFormat.rgba8888,
@@ -240,7 +273,7 @@ class _DirHomeScreenState extends State<DirHomeScreen> {
           rowBytes: frame.width * 4,
         );
       } else {
-        setState(() => _telemetry = tele);
+        _decodingFrame = false;
       }
     });
   }

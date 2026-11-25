@@ -36,6 +36,7 @@ public:
     size_t PumpRetransmissions(uint64_t now_ms, uint64_t rto_ms);
 
     size_t PendingCount() const;
+    size_t PendingMediaCount() const;
 
 private:
     mutable std::mutex mu_;

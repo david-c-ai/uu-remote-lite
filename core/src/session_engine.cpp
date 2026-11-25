@@ -138,15 +138,15 @@ uint32_t DetectLocalRouteIpBe(const uu::server::EndpointV4& target_ep) {
 struct HandshakeHello {
     uint8_t static_pub[32];
     uint64_t send_ts_us;
-    uint32_t codec_caps; // Bit 0: TileDeltaLz4, Bit 1: Apple VideoToolbox HEVC
+    uint32_t codec_caps; // Bit 0: TileDeltaLz4, Bit 1: Apple HEVC, Bit 2: Hardware JPEG (Flutter libjpeg-turbo)
 };
 #pragma pack(pop)
 
 uint32_t LocalCodecCaps() {
 #if defined(__APPLE__)
-    return 0x03;
+    return 0x07;
 #else
-    return 0x01;
+    return 0x05;
 #endif
 }
 
@@ -329,6 +329,28 @@ bool PeerNode::CopyLatestFrameBgra(std::vector<uint8_t>& out_bgra, uint16_t& out
     return true;
 }
 
+bool PeerNode::CopyLatestFrameEx(uint64_t last_seen_seq,
+                                 uint64_t& out_seq,
+                                 uint8_t& out_format,
+                                 std::vector<uint8_t>& out_bytes,
+                                 uint16_t& out_w,
+                                 uint16_t& out_h) const {
+    std::lock_guard<std::mutex> lk(state_mu_);
+    if (latest_frame_seq_ == 0 || latest_frame_seq_ == last_seen_seq) return false;
+    out_seq = latest_frame_seq_;
+    out_format = latest_frame_format_;
+    out_w = latest_w_;
+    out_h = latest_h_;
+    if (latest_frame_format_ == 2) {
+        if (latest_jpeg_.empty()) return false;
+        out_bytes = latest_jpeg_;
+        return true;
+    }
+    if (latest_bgra_.empty()) return false;
+    out_bytes = latest_bgra_;
+    return true;
+}
+
 void PeerNode::SendEncrypted(QoSLane lane, PacketType type, const void* payload, size_t len, uint32_t ack_or_group) {
     if (!has_session_key_) return;
 
@@ -374,7 +396,7 @@ void PeerNode::SendRawWireToActivePath(const uint8_t* data, size_t len) {
 void PeerNode::FlushScheduler() {
     std::vector<uint8_t> pkt;
     int burst_guard = 0;
-    while (burst_guard++ < 48 && scheduler_.PopNext(pkt)) {
+    while (burst_guard++ < 24 && scheduler_.PopNext(pkt)) {
         bytes_window_ += pkt.size();
         SendRawWireToActivePath(pkt.data(), pkt.size());
     }
@@ -389,7 +411,7 @@ void PeerNode::NetworkLoop() {
 
     while (running_.load(std::memory_order_relaxed)) {
         FlushScheduler();
-        PollUdp(sock_, 2);
+        PollUdp(sock_, 1);
 
         while (running_.load(std::memory_order_relaxed)) {
             sockaddr_in src{};
@@ -583,12 +605,15 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
         case PacketType::kHelloInit: {
             if (encoder_) {
                 bool peer_hevc = false;
+                bool peer_jpeg = false;
                 if (pt.size() >= sizeof(HandshakeHello)) {
                     HandshakeHello peer_h{};
                     std::memcpy(&peer_h, pt.data(), sizeof(peer_h));
                     peer_hevc = (peer_h.codec_caps & 0x02) != 0;
+                    peer_jpeg = (peer_h.codec_caps & 0x04) != 0;
                 }
                 encoder_->SetPeerSupportsHevc(peer_hevc);
+                encoder_->SetPeerSupportsJpeg((!cfg_.use_synthetic_capture || force_jpeg_test_) && peer_jpeg);
             }
             HandshakeHello accept{};
             std::memcpy(accept.static_pub, static_keys_.pub.data(), 32);
@@ -601,12 +626,15 @@ void PeerNode::HandleWirePacket(const uint8_t* raw, size_t len,
         case PacketType::kHelloAccept: {
             if (encoder_) {
                 bool peer_hevc = false;
+                bool peer_jpeg = false;
                 if (pt.size() >= sizeof(HandshakeHello)) {
                     HandshakeHello peer_h{};
                     std::memcpy(&peer_h, pt.data(), sizeof(peer_h));
                     peer_hevc = (peer_h.codec_caps & 0x02) != 0;
+                    peer_jpeg = (peer_h.codec_caps & 0x04) != 0;
                 }
                 encoder_->SetPeerSupportsHevc(peer_hevc);
+                encoder_->SetPeerSupportsJpeg((!cfg_.use_synthetic_capture || force_jpeg_test_) && peer_jpeg);
             }
             force_next_idr_.store(true);
             break;
@@ -833,7 +861,14 @@ void PeerNode::HandleVideoPacket(PacketType type, const uint8_t* payload, size_t
     if (decoder_->Decode(au, df)) {
         ++frames_window_;
         std::lock_guard<std::mutex> lk(state_mu_);
-        latest_bgra_ = std::move(df.bgra);
+        if (df.codec == VideoCodecId::kJpegFrame && !df.jpeg_bytes.empty()) {
+            latest_jpeg_ = std::move(df.jpeg_bytes);
+            latest_frame_format_ = 2;
+        } else {
+            latest_bgra_ = std::move(df.bgra);
+            latest_frame_format_ = 1;
+        }
+        ++latest_frame_seq_;
         latest_w_ = df.width;
         latest_h_ = df.height;
         telemetry_.remote_width = df.width;
@@ -900,7 +935,13 @@ void PeerNode::HostCaptureLoop() {
             SendEncrypted(QoSLane::kP0_FastInput, PacketType::kCursorPos, &cp, sizeof(cp));
         }
 
-        // 2. Capture screen & evaluate dirty rectangles
+        // 2. Backpressure: wait until previous frame's UDP shards finish draining before encoding next frame!
+        if (scheduler_.PendingMediaCount() > 16) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+            continue;
+        }
+
+        // Capture screen & evaluate dirty rectangles
         bool force_idr = force_next_idr_.exchange(false);
         CapturedFrame frame{};
         if (!capturer_->CaptureNext(frame, force_idr)) {
@@ -942,10 +983,10 @@ void PeerNode::HostCaptureLoop() {
                 data_shards.emplace_back(au.payload.begin() + off, au.payload.begin() + off + len);
             }
 
-            // Generate Adaptive FEC parity shards when loss > 0.8% (boosted protection on IDR keyframes!)
+            // Always-on lightweight FEC on keyframes & JPEG frames (0-RTT Wi-Fi loss healing!)
             uint16_t fec_group = target.fec_group_size;
-            if (au.is_keyframe && fec_group > 2) {
-                fec_group = 2;
+            if (au.is_keyframe || au.codec == VideoCodecId::kJpegFrame) {
+                fec_group = (fec_group == 0) ? 4 : std::min<uint16_t>(fec_group, 3);
             }
             auto parities = AdaptiveFecCodec::GenerateParity(data_shards, fec_group);
 

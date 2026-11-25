@@ -63,6 +63,18 @@ DIRCORE_API int32_t dir_node_copy_frame_rgba(DirHandle handle,
                                              uint16_t* out_width,
                                              uint16_t* out_height);
 
+// Zero-redundant-copy frame fetch:
+// Returns 0 if no new frame since last_seen_seq (0 CPU on static desktop!).
+// out_format: 1 = RGBA8888 raw, 2 = JPEG bitstream (for Flutter ui.instantiateImageCodec libjpeg-turbo!)
+DIRCORE_API int32_t dir_node_copy_frame_ex(DirHandle handle,
+                                           uint64_t last_seen_seq,
+                                           uint64_t* out_seq,
+                                           uint8_t* out_format,
+                                           uint8_t* dst_buf,
+                                           uint32_t dst_capacity,
+                                           uint16_t* out_width,
+                                           uint16_t* out_height);
+
 // Input, Multi-Monitor Selection & Controls
 DIRCORE_API void dir_node_send_mouse_ex(DirHandle handle, uint16_t x_norm, uint16_t y_norm,
                                         int16_t dx, int16_t dy, uint8_t button_mask, int16_t wheel_y);

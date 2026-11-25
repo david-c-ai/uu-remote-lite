@@ -69,10 +69,24 @@ typedef _VoidHandleDart = void Function(ffi.Pointer<ffi.Void>);
 typedef _GetTelemetryNative = ffi.Void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<DirTelemetryC>);
 typedef _GetTelemetryDart = void Function(ffi.Pointer<ffi.Void>, ffi.Pointer<DirTelemetryC>);
 
-typedef _CopyFrameNative = ffi.Int32 Function(
-    ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint8>, ffi.Uint32, ffi.Pointer<ffi.Uint16>, ffi.Pointer<ffi.Uint16>);
-typedef _CopyFrameDart = int Function(
-    ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint16>, ffi.Pointer<ffi.Uint16>);
+typedef _CopyFrameExNative = ffi.Int32 Function(
+    ffi.Pointer<ffi.Void>,
+    ffi.Uint64,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Uint32,
+    ffi.Pointer<ffi.Uint16>,
+    ffi.Pointer<ffi.Uint16>);
+typedef _CopyFrameExDart = int Function(
+    ffi.Pointer<ffi.Void>,
+    int,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint8>,
+    ffi.Pointer<ffi.Uint8>,
+    int,
+    ffi.Pointer<ffi.Uint16>,
+    ffi.Pointer<ffi.Uint16>);
 
 typedef _SendMouseExNative = ffi.Void Function(
     ffi.Pointer<ffi.Void>, ffi.Uint16, ffi.Uint16, ffi.Int16, ffi.Int16, ffi.Uint8, ffi.Int16);
@@ -103,7 +117,7 @@ class DirCoreBridge {
     _stop = _lib.lookupFunction<_VoidHandleNative, _VoidHandleDart>('dir_node_stop');
     _destroy = _lib.lookupFunction<_VoidHandleNative, _VoidHandleDart>('dir_node_destroy');
     _getTelemetry = _lib.lookupFunction<_GetTelemetryNative, _GetTelemetryDart>('dir_node_get_telemetry');
-    _copyFrameRgba = _lib.lookupFunction<_CopyFrameNative, _CopyFrameDart>('dir_node_copy_frame_rgba');
+    _copyFrameEx = _lib.lookupFunction<_CopyFrameExNative, _CopyFrameExDart>('dir_node_copy_frame_ex');
     _sendMouseEx = _lib.lookupFunction<_SendMouseExNative, _SendMouseExDart>('dir_node_send_mouse_ex');
     _sendKey = _lib.lookupFunction<_SendKeyNative, _SendKeyDart>('dir_node_send_key');
     _sendGamepad = _lib.lookupFunction<_SendGamepadNative, _SendGamepadDart>('dir_node_send_gamepad');
@@ -161,7 +175,7 @@ class DirCoreBridge {
   late final _VoidHandleDart _stop;
   late final _VoidHandleDart _destroy;
   late final _GetTelemetryDart _getTelemetry;
-  late final _CopyFrameDart _copyFrameRgba;
+  late final _CopyFrameExDart _copyFrameEx;
   late final _SendMouseExDart _sendMouseEx;
   late final _SendKeyDart _sendKey;
   late final _SendGamepadDart _sendGamepad;
@@ -238,7 +252,7 @@ class DirCoreBridge {
     }
   }
 
-  ({Uint8List rgbaBytes, int width, int height})? copyLatestFrameRgba() {
+  ({int seq, int format, Uint8List bytes, int width, int height})? copyLatestFrameIfNewer(int lastSeenSeq) {
     if (_handle == ffi.nullptr) return null;
     const maxCap = 3840 * 2160 * 4;
     if (_frameBuf == ffi.nullptr || _frameCap < maxCap) {
@@ -246,17 +260,23 @@ class DirCoreBridge {
       _frameBuf = calloc<ffi.Uint8>(maxCap);
       _frameCap = maxCap;
     }
+    final seqPtr = calloc<ffi.Uint64>();
+    final fmtPtr = calloc<ffi.Uint8>();
     final wPtr = calloc<ffi.Uint16>();
     final hPtr = calloc<ffi.Uint16>();
     try {
-      final copied = _copyFrameRgba(_handle, _frameBuf, _frameCap, wPtr, hPtr);
+      final copied = _copyFrameEx(_handle, lastSeenSeq, seqPtr, fmtPtr, _frameBuf, _frameCap, wPtr, hPtr);
       if (copied <= 0) return null;
       return (
-        rgbaBytes: Uint8List.fromList(_frameBuf.asTypedList(copied)),
+        seq: seqPtr.value,
+        format: fmtPtr.value,
+        bytes: Uint8List.fromList(_frameBuf.asTypedList(copied)),
         width: wPtr.value,
         height: hPtr.value,
       );
     } finally {
+      calloc.free(seqPtr);
+      calloc.free(fmtPtr);
       calloc.free(wPtr);
       calloc.free(hPtr);
     }
